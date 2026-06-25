@@ -60,6 +60,7 @@ Precompute reusable packages once:
   --mcp-url https://feeble-anyway-barbed.ngrok-free.dev/sse \
   --output-file ./outputs/openai_o4_mini_deep_research/company_6201/insights.json \
   --data-package-dir ./data/10k/company_packages \
+  --data-package-profile compact \
   --file-input-mode base64 \
   --api-timeout 0 \
   --use-code-interpreter \
@@ -74,6 +75,7 @@ Pure uploaded-data mode, with no DDR_Bench MCP exposed to the model:
   --cik 6201 \
   --output-file ./outputs/openai_o4_mini_deep_research_data_package/company_6201/insights.json \
   --data-package-dir ./data/10k/company_packages \
+  --data-package-profile compact \
   --file-input-mode base64 \
   --api-timeout 0 \
   --data-package-only \
@@ -87,11 +89,15 @@ Pure uploaded-data mode, with no DDR_Bench MCP exposed to the model:
 `--use-data-package` exports schema, metadata, filings, and financial facts
 from `data/10k/raw/10k_financial_data.db` and attaches them as Responses
 `input_file` items. The default `--file-input-mode base64` follows the file
-inputs guide and avoids `/v1/files`; use `--file-input-mode upload` only when
-the target API endpoint supports OpenAI-compatible file uploads. Keep the
-default MCP mode for the original OpenAI deep-research baseline; use
-data-package mode for an apples-to-apples comparison with file-native methods
-such as DeepAnalyze or for runs where public HTTPS MCP access is inconvenient.
+inputs guide and avoids `/v1/files`. The default `--data-package-profile
+compact` attaches schema, metadata, and summary files while skipping large raw
+JSONL files that can exceed the model context window; use
+`--data-package-profile full` only with a large enough context window. Use
+`--file-input-mode upload` only when the target API endpoint supports
+OpenAI-compatible file uploads. Keep the default MCP mode for the original
+OpenAI deep-research baseline; use data-package mode for an apples-to-apples
+comparison with file-native methods such as DeepAnalyze or for runs where
+public HTTPS MCP access is inconvenient.
 
 Evaluate:
 

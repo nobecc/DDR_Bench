@@ -172,6 +172,7 @@ class CompanyBatchAnalyzer(BaseBatchAnalyzer):
 
         # Setup MCP arguments
         cmd.extend(["--sql-server", "tool_server/sqlite_mcp.py"])
+        cmd.extend(["--code-server", "tool_server/code_mcp.py"])
         
         # Pass max_turns if provided
         if kwargs.get("max_turns"):

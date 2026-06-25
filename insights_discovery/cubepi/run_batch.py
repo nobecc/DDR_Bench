@@ -25,6 +25,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "gpt-5.5"))
     parser.add_argument("--sqlite-mcp-url", default=os.getenv("SQLITE_MCP_URL", "http://127.0.0.1:8765/sse"))
     parser.add_argument("--code-mcp-url", default=os.getenv("CODE_MCP_URL", "http://127.0.0.1:8766/sse"))
+    parser.add_argument("--config", type=Path, default=Path("config.yaml"))
+    parser.add_argument("--scenario", default="10k")
+    parser.add_argument("--mcp-mode", choices=["auto", "all", "none"], default="auto")
+    parser.add_argument("--no-auto-mcp", action="store_true")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--min-insights", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=0.2)
@@ -39,6 +43,9 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
         "--model", args.model,
         "--sqlite-mcp-url", args.sqlite_mcp_url,
         "--code-mcp-url", args.code_mcp_url,
+        "--config", str(args.config),
+        "--scenario", args.scenario,
+        "--mcp-mode", args.mcp_mode,
         "--env-file", args.env_file,
         "--min-insights", str(args.min_insights),
         "--timeout", str(args.timeout),
@@ -50,6 +57,8 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
         extra.extend(["--base-url", args.base_url])
     if args.api_key:
         extra.extend(["--api-key", args.api_key])
+    if args.no_auto_mcp:
+        extra.append("--no-auto-mcp")
     return extra
 
 

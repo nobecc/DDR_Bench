@@ -29,11 +29,20 @@ from insights_discovery.common.output import (  # noqa: E402
     normalize_output,
     write_outputs,
 )
+from insights_discovery.common.mcp_servers import (  # noqa: E402
+    CODE_MCP_URL,
+    CODE_SERVER_NAME,
+    SQLITE_MCP_URL,
+    SQLITE_SERVER_NAME,
+    build_active_mcp_config,
+    managed_mcp_servers,
+    server_names_from_resolution,
+)
 
 
 AGENT_RULES_PATH = REPO_ROOT / ".deepagents" / "AGENTS.md"
-DEFAULT_SQLITE_MCP_URL = "http://127.0.0.1:8765/sse"
-DEFAULT_CODE_MCP_URL = "http://127.0.0.1:8766/sse"
+DEFAULT_CONFIG = Path("config.yaml")
+DEFAULT_SCENARIO = "10k"
 
 
 def load_env_file(path: str) -> None:
@@ -49,22 +58,6 @@ def load_env_file(path: str) -> None:
         value = value.strip().strip("'\"")
         if key and key not in os.environ:
             os.environ[key] = value
-
-
-def make_env() -> dict[str, str]:
-    env = os.environ.copy()
-    no_proxy = env.get(
-        "no_proxy",
-        "localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn",
-    )
-    for item in ["localhost", "127.0.0.1", "::1"]:
-        if item not in no_proxy:
-            no_proxy = f"{no_proxy},{item}" if no_proxy else item
-    os.environ["no_proxy"] = no_proxy
-    os.environ["NO_PROXY"] = no_proxy
-    env["no_proxy"] = no_proxy
-    env["NO_PROXY"] = no_proxy
-    return env
 
 
 def output_path(args: argparse.Namespace) -> Path:
@@ -144,7 +137,7 @@ def build_provider(args: argparse.Namespace):
     raise ValueError(f"Unsupported provider: {args.provider}")
 
 
-def build_tools(args: argparse.Namespace, tool_usage: dict[str, dict[str, int]]):
+def build_tools(args: argparse.Namespace, tool_usage: dict[str, dict[str, int]], active_servers: set[str]):
     async def call_and_record(url: str, tool_name: str, arguments: dict[str, Any], public_name: str) -> str:
         try:
             result = await call_mcp_tool(url, tool_name, arguments)
@@ -153,99 +146,108 @@ def build_tools(args: argparse.Namespace, tool_usage: dict[str, dict[str, int]])
         record_tool_usage(tool_usage, public_name, result)
         return compact_json(result)
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_sqlite_get_database_info() -> str:
-        """Get general information about the DDR_Bench 10-K SQLite database."""
-        return await call_and_record(
-            args.sqlite_mcp_url,
-            "get_database_info",
-            {},
-            "ddrbench_sqlite_get_database_info",
-        )
+    tools = []
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_sqlite_describe_table(table_name: str) -> str:
-        """Get columns and schema details for a SQLite table."""
-        return await call_and_record(
-            args.sqlite_mcp_url,
-            "describe_table",
-            {"table_name": table_name},
-            "ddrbench_sqlite_describe_table",
-        )
+    if SQLITE_SERVER_NAME in active_servers:
+        @tool(execution_mode="sequential")
+        async def ddrbench_sqlite_get_database_info() -> str:
+            """Get general information about the DDR_Bench 10-K SQLite database."""
+            return await call_and_record(
+                args.sqlite_mcp_url,
+                "get_database_info",
+                {},
+                "ddrbench_sqlite_get_database_info",
+            )
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_sqlite_search(query: str, max_results: int = 20) -> str:
-        """Search records across all DDR_Bench SQLite tables."""
-        return await call_and_record(
-            args.sqlite_mcp_url,
-            "search",
-            {"query": query, "max_results": max_results},
-            "ddrbench_sqlite_search",
-        )
+        @tool(execution_mode="sequential")
+        async def ddrbench_sqlite_describe_table(table_name: str) -> str:
+            """Get columns and schema details for a SQLite table."""
+            return await call_and_record(
+                args.sqlite_mcp_url,
+                "describe_table",
+                {"table_name": table_name},
+                "ddrbench_sqlite_describe_table",
+            )
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_sqlite_execute_query(query: str, limit: int = 20) -> str:
-        """Execute a read-only SQL query against the DDR_Bench 10-K database."""
-        return await call_and_record(
-            args.sqlite_mcp_url,
-            "execute_query",
-            {"query": query, "limit": limit},
-            "ddrbench_sqlite_execute_query",
-        )
+        @tool(execution_mode="sequential")
+        async def ddrbench_sqlite_search(query: str, max_results: int = 20) -> str:
+            """Search records across all DDR_Bench SQLite tables."""
+            return await call_and_record(
+                args.sqlite_mcp_url,
+                "search",
+                {"query": query, "max_results": max_results},
+                "ddrbench_sqlite_search",
+            )
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_sqlite_fetch(id: str) -> str:
-        """Fetch one full SQLite record by ID returned from search."""
-        return await call_and_record(
-            args.sqlite_mcp_url,
-            "fetch",
-            {"id": id},
-            "ddrbench_sqlite_fetch",
-        )
+        @tool(execution_mode="sequential")
+        async def ddrbench_sqlite_execute_query(query: str, limit: int = 20) -> str:
+            """Execute a read-only SQL query against the DDR_Bench 10-K database."""
+            return await call_and_record(
+                args.sqlite_mcp_url,
+                "execute_query",
+                {"query": query, "limit": limit},
+                "ddrbench_sqlite_execute_query",
+            )
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_code_execute_code(code: str, timeout: int = 30) -> str:
-        """Execute read-only Python analysis code in the DDR_Bench data root."""
-        return await call_and_record(
-            args.code_mcp_url,
-            "execute_code",
-            {"code": code, "timeout": timeout},
-            "ddrbench_code_execute_code",
-        )
+        @tool(execution_mode="sequential")
+        async def ddrbench_sqlite_fetch(id: str) -> str:
+            """Fetch one full SQLite record by ID returned from search."""
+            return await call_and_record(
+                args.sqlite_mcp_url,
+                "fetch",
+                {"id": id},
+                "ddrbench_sqlite_fetch",
+            )
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_code_list_files(path: str = ".", pattern: str | None = None, recursive: bool = False) -> str:
-        """List files available through the DDR_Bench code MCP server."""
-        arguments: dict[str, Any] = {"path": path, "recursive": recursive}
-        if pattern:
-            arguments["pattern"] = pattern
-        return await call_and_record(
-            args.code_mcp_url,
-            "list_files",
-            arguments,
-            "ddrbench_code_list_files",
-        )
+        tools.extend([
+            ddrbench_sqlite_get_database_info,
+            ddrbench_sqlite_describe_table,
+            ddrbench_sqlite_search,
+            ddrbench_sqlite_execute_query,
+            ddrbench_sqlite_fetch,
+        ])
 
-    @tool(execution_mode="sequential")
-    async def ddrbench_code_get_field_description(data_file: str) -> str:
-        """Get field descriptions for a data file exposed by the code MCP server."""
-        return await call_and_record(
-            args.code_mcp_url,
-            "get_field_description",
-            {"data_file": data_file},
-            "ddrbench_code_get_field_description",
-        )
+    if CODE_SERVER_NAME in active_servers:
+        @tool(execution_mode="sequential")
+        async def ddrbench_code_execute_code(code: str, timeout: int = 30) -> str:
+            """Execute read-only Python analysis code in the DDR_Bench data root."""
+            return await call_and_record(
+                args.code_mcp_url,
+                "execute_code",
+                {"code": code, "timeout": timeout},
+                "ddrbench_code_execute_code",
+            )
 
-    return [
-        ddrbench_sqlite_get_database_info,
-        ddrbench_sqlite_describe_table,
-        ddrbench_sqlite_search,
-        ddrbench_sqlite_execute_query,
-        ddrbench_sqlite_fetch,
-        ddrbench_code_execute_code,
-        ddrbench_code_list_files,
-        ddrbench_code_get_field_description,
-    ]
+        @tool(execution_mode="sequential")
+        async def ddrbench_code_list_files(path: str = ".", pattern: str | None = None, recursive: bool = False) -> str:
+            """List files available through the DDR_Bench code MCP server."""
+            arguments: dict[str, Any] = {"path": path, "recursive": recursive}
+            if pattern:
+                arguments["pattern"] = pattern
+            return await call_and_record(
+                args.code_mcp_url,
+                "list_files",
+                arguments,
+                "ddrbench_code_list_files",
+            )
+
+        @tool(execution_mode="sequential")
+        async def ddrbench_code_get_field_description(data_file: str) -> str:
+            """Get field descriptions for a data file exposed by the code MCP server."""
+            return await call_and_record(
+                args.code_mcp_url,
+                "get_field_description",
+                {"data_file": data_file},
+                "ddrbench_code_get_field_description",
+            )
+
+        tools.extend([
+            ddrbench_code_execute_code,
+            ddrbench_code_list_files,
+            ddrbench_code_get_field_description,
+        ])
+
+    return tools
 
 
 def message_text(message: Any) -> str:
@@ -293,7 +295,6 @@ def output_is_parseable(data: dict[str, Any], min_insights: int) -> tuple[bool, 
 
 async def run_agent_async(args: argparse.Namespace) -> str:
     load_env_file(args.env_file)
-    make_env()
 
     task = build_task(args.cik or "", args.question or "")
     output_file = output_path(args)
@@ -309,6 +310,8 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     prompt_file.write_text(prompt + "\n", encoding="utf-8")
 
     tool_usage = init_tool_usage()
+    _mcp_config, mcp_resolution = build_active_mcp_config(args.config, args.scenario, args.mcp_mode)
+    active_servers = server_names_from_resolution(mcp_resolution)
     provider = build_provider(args)
     model = provider.model(
         args.model,
@@ -319,7 +322,7 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     agent = Agent(
         model=model,
         system_prompt=build_system_prompt(args, task, output_file),
-        tools=build_tools(args, tool_usage),
+        tools=build_tools(args, tool_usage, active_servers),
         tool_execution="sequential",
     )
 
@@ -328,8 +331,15 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     chunks: list[str] = []
     assistant_texts: list[str] = []
 
-    with log_path.open("w", encoding="utf-8") as log:
+    with managed_mcp_servers(
+        mcp_resolution,
+        config_path=args.config,
+        scenario=args.scenario,
+        log_dir=output_file.parent,
+        enabled=not args.no_auto_mcp,
+    ), log_path.open("w", encoding="utf-8") as log:
         log.write(f"$ cubepi run_single provider={args.provider} model={args.model}\n\n")
+        log.write("MCP resolution: " + json.dumps(mcp_resolution, ensure_ascii=False) + "\n\n")
         log.write(prompt + "\n\n")
         log.flush()
 
@@ -376,6 +386,7 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     raw_text = assistant_texts[-1] if assistant_texts else "".join(chunks)
     data = normalize_output(raw_text, task, args.cik or "")
     data["tool_usage"] = tool_usage
+    data["mcp_resolution"] = mcp_resolution
     data["model_calls"] = {"attempts": 1, "completed": 1, "failures": 0}
     data["runtime"] = {
         "provider": args.provider,
@@ -399,8 +410,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", default=os.getenv("MODEL_BASE_URL", ""))
     parser.add_argument("--api-key", default=os.getenv("MODEL_API_KEY", ""))
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "gpt-5.5"))
-    parser.add_argument("--sqlite-mcp-url", default=os.getenv("SQLITE_MCP_URL", DEFAULT_SQLITE_MCP_URL))
-    parser.add_argument("--code-mcp-url", default=os.getenv("CODE_MCP_URL", DEFAULT_CODE_MCP_URL))
+    parser.add_argument("--sqlite-mcp-url", default=os.getenv("SQLITE_MCP_URL", SQLITE_MCP_URL))
+    parser.add_argument("--code-mcp-url", default=os.getenv("CODE_MCP_URL", CODE_MCP_URL))
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--scenario", default=DEFAULT_SCENARIO)
+    parser.add_argument("--mcp-mode", choices=["auto", "all", "none"], default="auto")
+    parser.add_argument("--no-auto-mcp", action="store_true")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--cik", help="10-K company CIK. Builds the task: Analyze company with CIK {cik}")
     parser.add_argument("--question", help="Optional custom task override. If omitted, --cik is required.")

@@ -20,6 +20,7 @@ class ScenarioConfig:
     name: str
     db_path: str = ""
     data_path: str = ""
+    data_sources: List[Dict[str, Any]] = field(default_factory=list)
     qa_file: str = ""
     input_file: str = ""
     id_file: str = ""  # Pre-defined identifier list file
@@ -158,6 +159,7 @@ class Config:
                     name=name,
                     db_path=scenario_data.get("db_path", ""),
                     data_path=scenario_data.get("data_path", ""),
+                    data_sources=scenario_data.get("data_sources", []),
                     qa_file=scenario_data.get("qa_file", ""),
                     input_file=scenario_data.get("input_file", ""),
                     id_file=scenario_data.get("id_file", ""),

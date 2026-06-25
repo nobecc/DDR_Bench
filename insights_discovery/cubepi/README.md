@@ -11,9 +11,11 @@ This runner mirrors the `.deepagents` single-agent rules:
 
 The implementation targets the repository lockfile dependency, `cubepi 0.11.0`. The official quick start pattern is `Agent`, provider-bound models, async `@tool` functions, and subscribing to events before `agent.prompt(...)`.
 
-## Start MCP servers
+## MCP Servers
 
-Run these from the repository root before launching the agent:
+`run_single.py` and `run_batch.py` auto-start the DDR_Bench SSE MCP servers needed by the configured data sources. Use `--mcp-mode auto` (default) to start only available sources, `--mcp-mode all` to expose both SQLite and code MCP, or `--mcp-mode none` to run without MCP. Pass `--no-auto-mcp` if you want to manage MCP servers yourself.
+
+Manual startup remains useful for debugging. For SQLite:
 
 ```bash
 ./.venv/bin/python tool_server/sqlite_mcp.py \
@@ -22,6 +24,8 @@ Run these from the repository root before launching the agent:
   --port 8765 \
   --data-path ./data/10k/raw/10k_financial_data.db
 ```
+
+For CSV/file analysis:
 
 ```bash
 ./.venv/bin/python tool_server/code_mcp.py \

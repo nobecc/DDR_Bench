@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from config import get_config
-from DDR_Bench.insights_discovery.common.evaluate_checklist import UnifiedEvaluator
+from evaluate.unified_evaluator import UnifiedEvaluator
 
 
 def parse_args() -> argparse.Namespace:

@@ -56,12 +56,23 @@ from insights_discovery.common.tools import build_openai_mcp_tools  # noqa: E402
 class ApiHTTPError(RuntimeError):
     """HTTP error from the OpenAI-compatible Responses endpoint."""
 
-    def __init__(self, method: str, url: str, status_code: int, body: str):
+    def __init__(self, method: str, url: str, status_code: int, body: str, headers: Any = None):
         self.method = method
         self.url = url
         self.status_code = status_code
         self.body = body
-        super().__init__(f"{method} {url} failed with HTTP {status_code}: {body[:2000]}")
+        self.headers = headers_to_dict(headers)
+        self.request_id = extract_request_id(self.headers)
+        suffix = f" request_id={self.request_id}" if self.request_id else ""
+        super().__init__(f"{method} {url} failed with HTTP {status_code}:{suffix} {body[:2000]}")
+
+
+class ResponseStatusError(RuntimeError):
+    def __init__(self, message: str, response: Dict[str, Any]):
+        self.response = response
+        self.request_id = response_field(response_field(response, "_http", {}) or {}, "request_id", "") or ""
+        suffix = f" request_id={self.request_id}" if self.request_id else ""
+        super().__init__(f"{message}{suffix}")
 
 
 TRANSIENT_EXCEPTIONS = (
@@ -74,6 +85,62 @@ TRANSIENT_EXCEPTIONS = (
     json.JSONDecodeError,
 )
 RETRY_EXCEPTIONS = TRANSIENT_EXCEPTIONS + (ApiHTTPError,)
+
+REQUEST_ID_HEADER_NAMES = [
+    "request-id",
+    "x-request-id",
+    "openai-request-id",
+    "x-openai-request-id",
+    "x-amzn-requestid",
+    "x-amzn-request-id",
+    "x-correlation-id",
+    "x-trace-id",
+    "traceparent",
+    "cf-ray",
+]
+
+
+def headers_to_dict(headers: Any) -> Dict[str, str]:
+    if not headers:
+        return {}
+    try:
+        return {str(key): str(value) for key, value in headers.items()}
+    except Exception:
+        return {}
+
+
+def extract_request_id(headers: Dict[str, str]) -> str:
+    lower_headers = {key.lower(): value for key, value in (headers or {}).items()}
+    for name in REQUEST_ID_HEADER_NAMES:
+        if lower_headers.get(name):
+            return lower_headers[name]
+    return ""
+
+
+def attach_http_metadata(data: Any, headers: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    header_dict = headers_to_dict(headers)
+    request_id = extract_request_id(header_dict)
+    if request_id:
+        data.setdefault("_http", {})["request_id"] = request_id
+    return data
+
+
+def print_request_id(args: argparse.Namespace, method: str, url: str, headers: Any) -> None:
+    header_dict = headers_to_dict(headers)
+    if getattr(args, "print_response_headers", False):
+        print(f"{method} {url} response_headers={json.dumps(header_dict, ensure_ascii=False)}")
+    request_id = extract_request_id(header_dict)
+    if request_id and getattr(args, "print_request_id", False):
+        print(f"{method} {url} request_id={request_id}")
+
+
+def print_client_request_id(args: argparse.Namespace, method: str, url: str, headers: Dict[str, str]) -> None:
+    if getattr(args, "print_request_id", False):
+        client_request_id = headers.get("X-Client-Request-Id") or headers.get("X-Request-Id")
+        if client_request_id:
+            print(f"{method} {url} client_request_id={client_request_id}")
 
 
 INSIGHT_MINING_SYSTEM_PROMPT = """You are an autonomous financial data exploration agent. Your job is to deeply explore the available data for the given 10-K company task and produce as many concrete, evidence-grounded insights as possible.
@@ -192,6 +259,9 @@ def write_error_output(
         "tool_usage": tool_usage,
         "model_calls": model_calls,
     }
+    request_id = getattr(error, "request_id", "")
+    if request_id:
+        data["error"]["request_id"] = request_id
     return write_outputs(data, output_path(args))
 
 
@@ -233,8 +303,8 @@ def raise_for_response_failure(response: Dict[str, Any]) -> None:
     if isinstance(error, dict) and error:
         code = error.get("code", "unknown_error")
         message = error.get("message", "")
-        raise RuntimeError(f"/v1/responses returned status={status}, code={code}: {message}")
-    raise RuntimeError(f"/v1/responses returned status={status}: {incomplete_details}")
+        raise ResponseStatusError(f"/v1/responses returned status={status}, code={code}: {message}", response)
+    raise ResponseStatusError(f"/v1/responses returned status={status}: {incomplete_details}", response)
 
 
 def record_tool_usage_from_response(tool_usage: Dict[str, Dict[str, int]], response: Any) -> None:
@@ -289,11 +359,14 @@ def validate_mcp_url_for_openai(mcp_url: str) -> None:
         )
 
 
-def openai_headers(args: argparse.Namespace, idempotency_key: str = "") -> Dict[str, str]:
+def openai_headers(args: argparse.Namespace, idempotency_key: str = "", client_request_id: str = "") -> Dict[str, str]:
     api_key = args.api_key or os.getenv("MODEL_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
+    client_request_id = client_request_id or idempotency_key or f"ddrbench-{uuid.uuid4()}"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "X-Client-Request-Id": client_request_id,
+        "X-Request-Id": client_request_id,
     }
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
@@ -367,12 +440,14 @@ def upload_openai_file(args: argparse.Namespace, path: Path) -> str:
         data=body,
         method="POST",
     )
+    print_client_request_id(args, "POST", upload_url, headers)
     try:
         with urllib.request.urlopen(request, timeout=args.request_timeout) as response:
+            print_request_id(args, "POST", upload_url, response.headers)
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise ApiHTTPError("POST", upload_url, exc.code, error_body) from exc
+        raise ApiHTTPError("POST", upload_url, exc.code, error_body, exc.headers) from exc
     file_id = data.get("id")
     if not file_id:
         raise RuntimeError(f"File upload response did not include an id: {data}")
@@ -383,6 +458,36 @@ def file_data_url(path: Path) -> str:
     content_type = supported_file_mime_type(path)
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
+
+
+def select_data_package_paths(args: argparse.Namespace, paths: List[Path]) -> List[Path]:
+    if not args.use_data_package:
+        return []
+    if args.data_package_profile == "compact":
+        selected = [
+            path for path in paths
+            if path.name.endswith(("_metadata.json", "_schema.json", "_summary.json", "_summary.csv"))
+        ]
+    elif args.data_package_profile == "summary":
+        selected = [path for path in paths if path.name.endswith(("_metadata.json", "_summary.json", "_summary.csv"))]
+    elif args.data_package_profile == "full":
+        selected = list(paths)
+    else:
+        raise ValueError(f"Unsupported --data-package-profile: {args.data_package_profile}")
+
+    if args.max_attached_file_bytes > 0:
+        kept: List[Path] = []
+        total = 0
+        for path in sorted(selected, key=lambda item: item.stat().st_size):
+            size = path.stat().st_size
+            if total + size > args.max_attached_file_bytes:
+                continue
+            kept.append(path)
+            total += size
+        selected = kept
+    if not selected:
+        raise ValueError("No data-package files selected for attachment; increase --max-attached-file-bytes or change --data-package-profile.")
+    return selected
 
 
 def build_input(args: argparse.Namespace, input_text: str, data_package_paths: List[Path], file_ids: List[str]) -> Any:
@@ -429,20 +534,23 @@ def request_json(
     idempotency_key: str = "",
 ) -> Dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = openai_headers(args, idempotency_key=idempotency_key)
     request = urllib.request.Request(
         url,
-        headers=openai_headers(args, idempotency_key=idempotency_key),
+        headers=headers,
         data=data,
         method=method,
     )
+    print_client_request_id(args, method, url, headers)
     actual_timeout = args.request_timeout if timeout is None else (None if timeout <= 0 else timeout)
     try:
         with urllib.request.urlopen(request, timeout=actual_timeout) as response:
+            print_request_id(args, method, url, response.headers)
             response_body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise ApiHTTPError(method, url, exc.code, error_body) from exc
-    return json.loads(response_body)
+        raise ApiHTTPError(method, url, exc.code, error_body, exc.headers) from exc
+    return attach_http_metadata(json.loads(response_body), response.headers)
 
 
 def is_retryable_http_error(exc: ApiHTTPError) -> bool:
@@ -492,12 +600,14 @@ def request_json_with_retries(
 
 def stream_response_v1(args: argparse.Namespace, payload: Dict[str, Any], *, idempotency_key: str = "") -> Dict[str, Any]:
     stream_payload = {**payload, "stream": True}
+    headers = {**openai_headers(args, idempotency_key=idempotency_key), "Accept": "text/event-stream"}
     request = urllib.request.Request(
         responses_endpoint(args.base_url),
-        headers={**openai_headers(args, idempotency_key=idempotency_key), "Accept": "text/event-stream"},
+        headers=headers,
         data=json.dumps(stream_payload).encode("utf-8"),
         method="POST",
     )
+    print_client_request_id(args, "POST", responses_endpoint(args.base_url), headers)
     actual_timeout = None if args.api_timeout <= 0 else args.api_timeout
     text_chunks: List[str] = []
     completed_response: Dict[str, Any] | None = None
@@ -537,6 +647,8 @@ def stream_response_v1(args: argparse.Namespace, payload: Dict[str, Any], *, ide
 
     try:
         with urllib.request.urlopen(request, timeout=actual_timeout) as response:
+            print_request_id(args, "POST", responses_endpoint(args.base_url), response.headers)
+            response_headers = response.headers
             for raw_line in response:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
                 if not line:
@@ -551,12 +663,12 @@ def stream_response_v1(args: argparse.Namespace, payload: Dict[str, Any], *, ide
             handle_sse_event()
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise ApiHTTPError("POST", responses_endpoint(args.base_url), exc.code, error_body) from exc
+        raise ApiHTTPError("POST", responses_endpoint(args.base_url), exc.code, error_body, exc.headers) from exc
 
     if completed_response is not None:
-        return completed_response
+        return attach_http_metadata(completed_response, response_headers)
     if text_chunks:
-        return {"status": "completed", "output_text": "".join(text_chunks)}
+        return attach_http_metadata({"status": "completed", "output_text": "".join(text_chunks)}, response_headers)
     raise RuntimeError("Streaming Responses request ended without a completed response or output text.")
 
 
@@ -664,15 +776,17 @@ def run_agent(args: argparse.Namespace) -> str:
     tool_usage = init_tool_usage()
     model_calls = {"attempts": 0, "completed": 0, "failures": 0}
     file_ids: List[str] = []
+    all_data_package_paths: List[Path] = []
     data_package_paths: List[Path] = []
 
     if args.use_data_package:
         if args.data_package_dir:
             package_dir = resolve_package_dir(args.data_package_dir, args.cik or "")
-            data_package_paths = existing_10k_company_package(args.cik or "", package_dir)
+            all_data_package_paths = existing_10k_company_package(args.cik or "", package_dir)
         else:
             package_dir = output_path(args).parent / "openai_input"
-            data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
+            all_data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
+        data_package_paths = select_data_package_paths(args, all_data_package_paths)
         if args.file_input_mode == "upload":
             file_ids = [upload_openai_file(args, path) for path in data_package_paths]
 
@@ -748,11 +862,15 @@ def run_agent(args: argparse.Namespace) -> str:
         data["token_usage_by_step"] = usage_by_step
         data["tool_usage"] = tool_usage
         data["model_calls"] = model_calls
+        if response_field(response, "_http"):
+            data["response_http"] = response_field(response, "_http")
         if args.use_data_package:
             data["data_package"] = {
-                "input_files": [str(path) for path in data_package_paths],
+                "package_files": [str(path) for path in all_data_package_paths],
+                "attached_files": [str(path) for path in data_package_paths],
                 "file_ids": file_ids,
                 "file_input_mode": args.file_input_mode,
+                "profile": args.data_package_profile,
                 "mode": "data_package_only" if args.data_package_only else "mcp_plus_data_package",
             }
         if not acceptable:
@@ -788,10 +906,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-insights", type=int, default=10, help="Minimum number of insights requested.")
     parser.add_argument("--output-dir", default="./outputs/openai_o4_mini_deep_research")
     parser.add_argument("--output-file", help="Exact JSON output path. CSV is written next to it.")
-    parser.add_argument("--api-timeout", type=float, default=14400.0, help="Overall wait time per model response. Use 0 to wait indefinitely.")
-    parser.add_argument("--request-timeout", type=float, default=60.0, help="HTTP timeout for each retrieve/poll request.")
-    parser.add_argument("--create-request-timeout", type=float, default=600.0, help="HTTP timeout for the initial response creation request.")
-    parser.add_argument("--request-retries", type=int, default=5, help="Retries for transient HTTP timeouts or URL errors.")
+    parser.add_argument("--api-timeout", type=float, default=0.0, help="Overall wait time per model response. Use 0 to wait indefinitely.")
+    parser.add_argument("--request-timeout", type=float, default=0.0, help="HTTP timeout for each retrieve/poll request. Use 0 to wait indefinitely.")
+    parser.add_argument("--create-request-timeout", type=float, default=0.0, help="HTTP timeout for the initial response creation request. Use 0 to wait indefinitely.")
+    parser.add_argument("--request-retries", type=int, default=1, help="Retries for transient HTTP timeouts or URL errors.")
     parser.add_argument("--retry-initial-delay", type=float, default=5.0)
     parser.add_argument("--retry-max-delay", type=float, default=60.0)
     parser.add_argument("--background", action=argparse.BooleanOptionalAction, default=True, help="Use Responses background mode and poll.")
@@ -804,11 +922,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-code-interpreter", action="store_true")
     parser.add_argument("--use-data-package", action="store_true", help="Export target CIK rows from SQLite and attach them as Responses input_file items.")
     parser.add_argument("--data-package-only", action="store_true", help="Use only attached SQLite-export files plus code interpreter; do not expose the MCP server.")
+    parser.add_argument("--data-package-profile", choices=["compact", "summary", "full"], default=os.getenv("OPENAI_DATA_PACKAGE_PROFILE", "compact"), help="Which exported package files to attach. compact skips large raw JSONL files.")
+    parser.add_argument("--max-attached-file-bytes", type=int, default=int(os.getenv("OPENAI_MAX_ATTACHED_FILE_BYTES", "1000000")), help="Maximum total bytes of package files to attach before base64 expansion. Use 0 for no limit.")
     parser.add_argument("--file-input-mode", choices=["base64", "upload", "none"], default=os.getenv("OPENAI_FILE_INPUT_MODE", "base64"), help="How to attach data-package files to Responses input. base64 avoids /v1/files.")
     parser.add_argument("--file-upload-purpose", default=os.getenv("OPENAI_FILE_UPLOAD_PURPOSE", "user_data"))
     parser.add_argument("--file-upload-model-field", action=argparse.BooleanOptionalAction, default=True, help="Include model in /v1/files multipart fields for OpenAI-compatible gateways that require it.")
     parser.add_argument("--code-interpreter-memory-limit", default=os.getenv("OPENAI_CODE_INTERPRETER_MEMORY_LIMIT", "4g"))
     parser.add_argument("--dump-raw-response", action="store_true")
+    parser.add_argument("--print-request-id", action="store_true", help="Print request id headers from Responses/File API calls.")
+    parser.add_argument("--print-response-headers", action="store_true", help="Print full HTTP response headers for debugging gateway request IDs.")
     parser.add_argument("--min-data-tool-calls", type=int, default=1)
     args = parser.parse_args()
     if args.data_package_only:

@@ -50,8 +50,8 @@ Prepare eval CSVs:
 ```bash
 ./.venv/bin/python insights_discovery/common/prepare_eval.py \
   --source-dir ./outputs/deepanalyze \
-  --output-dir ./logs/deepanalyze_10k \
-  --manifest ./logs/deepanalyze_10k/prepare_manifest.json
+  --output-dir ./eval/deepanalyze_10k \
+  --manifest ./eval/deepanalyze_10k/prepare_manifest.json
 ```
 
 Evaluate:
@@ -59,7 +59,7 @@ Evaluate:
 ```bash
 ./.venv/bin/python insights_discovery/common/evaluate_checklist.py \
   --scenario 10k \
-  --logs-dir ./logs/deepanalyze_10k \
+  --logs-dir ./eval/deepanalyze_10k \
   --output ./outputs/deepanalyze_10k_evaluation_result.json \
   --context-mode message-wise
 ```

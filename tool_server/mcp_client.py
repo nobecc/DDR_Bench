@@ -25,6 +25,7 @@ class MCPClientManager:
     def __init__(self):
         self.mcp_sessions: Dict[str, ClientSession] = {}
         self.stdio_clients: Dict[str, Any] = {}
+        self.tool_to_server: Dict[str, str] = {}
     
     async def connect_to_servers(self, configs: list[MCPServerConfig]) -> bool:
         """Connect to all configured MCP servers"""
@@ -41,7 +42,7 @@ class MCPClientManager:
                 # Create server parameters with script path and arguments
                 args = [str(script_path)] + (config.args or [])
                 server_params = StdioServerParameters(
-                    command="python3",
+                    command=sys.executable,
                     args=args,
                     env=os.environ.copy()  # Pass current environment variables to MCP server
                 )
@@ -80,6 +81,7 @@ class MCPClientManager:
                         "description": tool.description,
                         "inputSchema": tool.inputSchema
                     }
+                    self.tool_to_server[tool.name] = server_name
                 
                 all_tools[server_name] = server_tools
                 logger.info(f"Got {len(server_tools)} tools from {server_name}")
@@ -91,10 +93,17 @@ class MCPClientManager:
     
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute a tool call"""
-        # Find appropriate MCP server for the tool
+        # Route to the server that advertised this tool.
+        server_name = self.tool_to_server.get(tool_name)
+        if server_name and server_name in self.mcp_sessions:
+            try:
+                result = await self.mcp_sessions[server_name].call_tool(tool_name, arguments)
+                return self._format_tool_result(result)
+            except Exception as e:
+                return {"error": f"Tool '{tool_name}' failed on server '{server_name}': {e}"}
+
+        # Fallback for callers that execute before get_available_tools() has populated the map.
         for server_name, session in self.mcp_sessions.items():
-            # This would need to be updated to check against available_tools
-            # For now, we'll try all servers
             try:
                 result = await session.call_tool(tool_name, arguments)
                 return self._format_tool_result(result)
@@ -124,12 +133,12 @@ class MCPClientManager:
         for name, session in self.mcp_sessions.items():
             try:
                 await session.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"Error closing MCP session {name}: {e}")
+            except BaseException as e:
+                logger.debug(f"Error closing MCP session {name}: {e}")
         
         # Close all stdio clients
         for name, client in self.stdio_clients.items():
             try:
                 await client.__aexit__(None, None, None)
-            except Exception as e:
-                logger.error(f"Error closing stdio client {name}: {e}")
+            except BaseException as e:
+                logger.debug(f"Error closing stdio client {name}: {e}")

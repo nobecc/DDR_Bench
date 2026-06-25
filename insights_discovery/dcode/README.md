@@ -13,7 +13,28 @@ The current `.deepagents/` configuration is single-agent only and intentionally 
 
 ## MCP
 
-`.deepagents/.mcp.json` defines SSE MCP servers for SQLite/database search and read-only code execution:
+`run_single.py` and `run_batch.py` expose only the MCP servers needed by the configured data sources. In `--mcp-mode auto` (default), CSV-only configs expose only `ddrbench_code`, SQLite configs expose `ddrbench_sqlite` plus `ddrbench_code`, and missing data sources expose no MCP. Use `--mcp-mode all` to expose both servers or `--mcp-mode none` to disable MCP.
+
+By default, the dcode runner writes a temporary stdio MCP config and lets dcode start the needed servers itself:
+
+```json
+{
+  "mcpServers": {
+    "ddrbench_code": {
+      "command": "./.venv/bin/python",
+      "args": [
+        "tool_server/code_mcp.py",
+        "--transport",
+        "stdio",
+        "--data-path",
+        "."
+      ]
+    }
+  }
+}
+```
+
+For SSE debugging, pass `--mcp-transport sse`. In that mode the runner auto-starts local SSE servers unless `--no-auto-mcp` is passed. The SSE config shape is:
 
 ```json
 {
@@ -30,20 +51,17 @@ The current `.deepagents/` configuration is single-agent only and intentionally 
 }
 ```
 
-If your MCP server is not local, edit `.deepagents/.mcp.json` or pass a different config with `--mcp-config`.
-
-Start both servers:
+Manual startup remains useful for debugging. For SQLite:
 
 ```bash
-export no_proxy=localhost,127.0.0.1,10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn
-export NO_PROXY="$no_proxy"
-
 ./.venv/bin/python tool_server/sqlite_mcp.py \
   --transport sse \
   --host 127.0.0.1 \
   --port 8765 \
   --data-path ./data/10k/raw/10k_financial_data.db
 ```
+
+For CSV/file analysis:
 
 ```bash
 ./.venv/bin/python tool_server/code_mcp.py \
@@ -77,52 +95,100 @@ The agent prompts allow web search for secondary context and lead generation. Fi
 From the DDR_Bench repo root:
 
 ```bash
-export no_proxy=localhost,127.0.0.1,10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn
-export NO_PROXY="$no_proxy"
-
-./.venv/bin/dcode --trust-project-mcp -n "$(cat outputs/dcode/company_6201/prompt.txt)" --timeout 3600
+./.venv/bin/python insights_discovery/dcode/run_single.py \
+  --cik 6201 \
+  --output-dir outputs/dcode/test \
+  --mcp-mode auto \
+  -M openai:gpt-5.1
 ```
 
-## Run All Companies
+The runner writes to `outputs/dcode/test/company_6201/` by default when `--output-dir outputs/dcode/test` is used. MCP uses stdio by default, so no separate MCP server process is needed.
+The runner loads `.env` by default before launching dcode; pass `--env-file PATH` to use a different file. DeepAgents debug logs are written to each company directory as `dcode_debug.log`.
+
+Useful single-run options:
+
+```bash
+# Show the dcode command and resolved MCP servers without running the model
+./.venv/bin/python insights_discovery/dcode/run_single.py \
+  --cik 6201 \
+  --output-dir outputs/dcode/test \
+  --dry-run
+
+# Force both SQLite and code MCP servers to be exposed
+./.venv/bin/python insights_discovery/dcode/run_single.py \
+  --cik 6201 \
+  --output-dir outputs/dcode/test \
+  --mcp-mode all
+
+# Use already-running SSE MCP servers instead of auto-starting them
+./.venv/bin/python insights_discovery/dcode/run_single.py \
+  --cik 6201 \
+  --output-dir outputs/dcode/test \
+  --mcp-transport sse \
+  --no-auto-mcp
+```
+
+## Run Batch
 
 Run every CIK in `data/10k/entity_ids.json`:
 
 ```bash
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test \
+  --mcp-mode auto \
+  -M openai:gpt-5.1
 ```
 
 Useful options:
 
 ```bash
 # Smoke test the first two companies
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py --limit 2
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test \
+  --limit 2
 
 # Resume without overwriting existing valid insights.json files
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test
 
 # Force rerun
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py --overwrite
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test \
+  --overwrite
 
 # Run specific CIKs
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py --only 6201 1551152
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test \
+  --only 6201 1551152
 
 # Use a specific dcode model
-./.venv/bin/python insights_discovery/dcode/run_all_companies.py -M openai:gpt-5.5
+./.venv/bin/python insights_discovery/dcode/run_batch.py \
+  --output-dir outputs/dcode/test \
+  -M openai:gpt-5.1
+```
+
+`run_all_companies.py` remains as a compatibility wrapper around `run_batch.py`:
+
+```bash
+./.venv/bin/python insights_discovery/dcode/run_all_companies.py \
+  --output-dir outputs/dcode/test \
+  --limit 2
 ```
 
 Each company writes to:
 
 ```text
-outputs/dcode/company_<CIK>/insights.json
-outputs/dcode/company_<CIK>/run.log
-outputs/dcode/company_<CIK>/prompt.txt
-outputs/dcode/company_<CIK>/run_metadata.json
+outputs/dcode/test/company_<CIK>/insights.json
+outputs/dcode/test/company_<CIK>/run.log
+outputs/dcode/test/company_<CIK>/prompt.txt
+outputs/dcode/test/company_<CIK>/run_metadata.json
+outputs/dcode/test/company_<CIK>/dcode_debug.log
 ```
 
 The batch manifest is saved at:
 
 ```text
-outputs/dcode/batch_manifest.json
+outputs/dcode/test/batch_manifest.json
 ```
 
 `run_metadata.json` and `batch_manifest.json` include:
