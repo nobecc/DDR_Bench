@@ -6,6 +6,8 @@ Start DeepAnalyze as you described:
 
 ```bash
 # 1. Start vLLM on one rlaunch GPU worker, then put that worker IP into DeepAnalyze/API/config.py API_BASE.
+chmod +x /mnt/shared-storage-user/chenbei/DDR_Bench/insights_discovery/deepanalyze/run.sh
+rlaunch --gpu=1 --memory=160000  --cpu=16 --charged-group=evobox_gpu --private-machine=yes --mount=gpfs://gpfs1/chenbei:/mnt/shared-storage-user/chenbei --mount=gpfs://gpfs2/gpfs2-shared-public:/mnt/shared-storage-gpfs2/gpfs2-shared-public --image=registry.h.pjlab.org.cn/ailab-evobox-evobox_gpu/vllm:0.19.0-20260511 -- bash -exc /mnt/shared-storage-user/chenbei/DDR_Bench/insights_discovery/deepanalyze/run.sh
 
 # 2. Start the DeepAnalyze FastAPI server.
 cd /mnt/shared-storage-user/chenbei/DeepAnalyze

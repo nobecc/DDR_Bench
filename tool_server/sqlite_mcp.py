@@ -78,34 +78,37 @@ class SQLiteMCPServer(BaseMCPServer):
     def _get_specific_tools(self) -> List[types.Tool]:
         """Get SQLite-specific tools"""
         return [
-            types.Tool(
-                name="search",
-                description="Search records across all SQLite tables. Returns sqlite://table/rowid IDs that can be passed to fetch.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search terms, CIK, ticker, accession number, filing form, metric tag, or a read-only SQL query"
-                        }
-                    },
-                    "required": ["query"]
-                }
-            ),
-            types.Tool(
-                name="fetch",
-                description="Fetch one full SQLite record by ID, such as sqlite://companies/42 or companies/42.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Record ID returned by search"
-                        }
-                    },
-                    "required": ["id"]
-                }
-            ),
+            # Disabled: free-text search can return records for the wrong CIK.
+            # Use execute_query with an explicit CIK predicate instead.
+            # types.Tool(
+            #     name="search",
+            #     description="Search records across all SQLite tables. Returns sqlite://table/rowid IDs that can be passed to fetch.",
+            #     inputSchema={
+            #         "type": "object",
+            #         "properties": {
+            #             "query": {
+            #                 "type": "string",
+            #                 "description": "Search terms, CIK, ticker, accession number, filing form, metric tag, or a read-only SQL query"
+            #             }
+            #         },
+            #         "required": ["query"]
+            #     }
+            # ),
+            # Disabled together with search because fetch consumes search result IDs.
+            # types.Tool(
+            #     name="fetch",
+            #     description="Fetch one full SQLite record by ID, such as sqlite://companies/42 or companies/42.",
+            #     inputSchema={
+            #         "type": "object",
+            #         "properties": {
+            #             "id": {
+            #                 "type": "string",
+            #                 "description": "Record ID returned by search"
+            #             }
+            #         },
+            #         "required": ["id"]
+            #     }
+            # ),
             types.Tool(
                 name="execute_query",
                 description="Execute read-only database queries. Support complex queries.",
@@ -153,14 +156,15 @@ class SQLiteMCPServer(BaseMCPServer):
     
     async def _handle_specific_tool_call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Handle SQLite-specific tool calls"""
-        if name == "search":
-            return self._search(
-                arguments["query"],
-                arguments.get("max_results", arguments.get("limit", self.limit_default))
-            )
-        elif name == "fetch":
-            return self._fetch(arguments["id"])
-        elif name == "execute_query":
+        # Disabled: these tools are intentionally not advertised or callable.
+        # if name == "search":
+        #     return self._search(
+        #         arguments["query"],
+        #         arguments.get("max_results", arguments.get("limit", self.limit_default))
+        #     )
+        # elif name == "fetch":
+        #     return self._fetch(arguments["id"])
+        if name == "execute_query":
             return self._execute_query(
                 arguments["query"], 
                 arguments.get("limit", self.limit_default)

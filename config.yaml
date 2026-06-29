@@ -45,14 +45,14 @@ scenarios:
     db_path: "./data/10k/raw/10k_financial_data.db" # Download from https://huggingface.co/datasets/thinkwee/DDRBench_10K/tree/main/raw
     data_path: "./data/10k"  # Code MCP root for SQLite-adjacent files and CSV exports
     data_sources:
-      # - name: "10k_sqlite"
-      #   type: "sqlite"
-      #   path: "./data/10k/raw/10k_financial_data.db"
-      #   description: "Raw SEC 10-K SQLite database."
-      - name: "10k_csv"
-        type: "csv"
-        path: "./data/10k/csv"
-        description: "CSV files containing entities and relationships parsed from the raw SQLite database."
+      - name: "10k_sqlite"
+        type: "sqlite"
+        path: "./data/10k/raw/10k_financial_data.db"
+        description: "Raw SEC 10-K SQLite database."
+      # - name: "10k_csv"
+      #   type: "csv"
+      #   path: "./data/10k/csv"
+      #   description: "CSV files containing entities and relationships parsed from the raw SQLite database."
     id_file: "./data/10k/entity_ids.json"  # List of 100 entity (company) CIKs
     qa_file: "./data/10k/qa.json"  # QA file for evaluation
     log_dir: "./outputs/react"
