@@ -68,9 +68,7 @@ def init_tool_usage() -> dict[str, dict[str, int]]:
     names = [
         "ddrbench_sqlite_get_database_info",
         "ddrbench_sqlite_describe_table",
-        "ddrbench_sqlite_search",
         "ddrbench_sqlite_execute_query",
-        "ddrbench_sqlite_fetch",
         "ddrbench_code_execute_code",
         "ddrbench_code_list_files",
         "ddrbench_code_get_field_description",
@@ -170,16 +168,6 @@ def build_tools(args: argparse.Namespace, tool_usage: dict[str, dict[str, int]],
             )
 
         @tool(execution_mode="sequential")
-        async def ddrbench_sqlite_search(query: str, max_results: int = 20) -> str:
-            """Search records across all DDR_Bench SQLite tables."""
-            return await call_and_record(
-                args.sqlite_mcp_url,
-                "search",
-                {"query": query, "max_results": max_results},
-                "ddrbench_sqlite_search",
-            )
-
-        @tool(execution_mode="sequential")
         async def ddrbench_sqlite_execute_query(query: str, limit: int = 20) -> str:
             """Execute a read-only SQL query against the DDR_Bench 10-K database."""
             return await call_and_record(
@@ -189,22 +177,10 @@ def build_tools(args: argparse.Namespace, tool_usage: dict[str, dict[str, int]],
                 "ddrbench_sqlite_execute_query",
             )
 
-        @tool(execution_mode="sequential")
-        async def ddrbench_sqlite_fetch(id: str) -> str:
-            """Fetch one full SQLite record by ID returned from search."""
-            return await call_and_record(
-                args.sqlite_mcp_url,
-                "fetch",
-                {"id": id},
-                "ddrbench_sqlite_fetch",
-            )
-
         tools.extend([
             ddrbench_sqlite_get_database_info,
             ddrbench_sqlite_describe_table,
-            ddrbench_sqlite_search,
             ddrbench_sqlite_execute_query,
-            ddrbench_sqlite_fetch,
         ])
 
     if CODE_SERVER_NAME in active_servers:

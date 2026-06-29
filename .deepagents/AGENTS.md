@@ -14,12 +14,12 @@ For the target CIK, discover as many distinct, evidence-grounded 10-K insights a
 - Treat configured local SQLite databases and CSV files/directories as first-class evidence sources.
 - The code MCP root is the DDR_Bench repository root. Use repository-relative paths such as `data/10k/raw/10k_financial_data.db`, `data/10k/csv/*.csv`, and `data/10k/csv/company_<CIK>_summary.csv`; do not prefix paths with an extra `data/10k` after you are already inside `data/10k`.
 - `ddrbench_code_execute_code` is read-only. Use it for CSV/database analysis summaries printed to stdout.
-- Web search, if available, is only for context or search leads. Final insights must cite local SQLite or CSV/file evidence.
+- Web sources, if available, are only for context. Final insights must cite local SQLite or CSV/file evidence.
 
 Before doing substantive analysis, perform data source discovery and decide which local tools to use:
 
 - First discover what local evidence sources are available for the target CIK.
-- If a SQLite database is available, use the SQLite MCP for database info, schema inspection, searches, SQL queries, and record fetching; you may also use the code MCP with read-only Python, sqlite3, and pandas for larger summaries, cross-table joins, derived metrics, trends, and anomaly detection.
+- If a SQLite database is available, use the SQLite MCP for database info, schema inspection, and targeted read-only SQL queries; you may also use the code MCP with read-only Python, sqlite3, and pandas for larger summaries, cross-table joins, derived metrics, trends, and anomaly detection.
 - If CSV files are available, use the code MCP tools for file listing, field inspection, and read-only Python/pandas analysis.
 
 ## Required Exploration
@@ -30,10 +30,10 @@ Do not produce final JSON until you have completed this data pass:
 - if no local SQLite database or CSV evidence source is available for the target CIK, do not force tool-count requirements; explain the missing data source in the final JSON summary and return any supported findings only if local evidence exists;
 - if SQLite is available, inspect database info and relevant table schemas;
 - if CSV files are available, list matching CSV files and inspect their columns/field descriptions;
-- if at least one local evidence source is available, run at least 10 searches across the available local sources;
+- if at least one local evidence source is available, run at least 10 targeted read-only queries across the available local sources;
 - if SQLite is available, run at least 20 targeted SQLite queries;
 - if CSV is available, run at least 20 targeted pandas queries, filters, groupbys, joins, or aggregations over the CSV files;
-- if at least one local evidence source is available, fetch or print at least 10 promising local records/rows/snippets, unless the discovered local data is too sparse;
+- if at least one local evidence source is available, query or print at least 10 promising local records/rows/snippets, unless the discovered local data is too sparse;
 - if at least one local evidence source is available, run at least 5 read-only Python analyses against the available SQLite database and/or CSV files;
 - produce at least 20 distinct high-value insights if local data supports them.
 

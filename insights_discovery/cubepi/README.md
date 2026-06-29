@@ -5,7 +5,7 @@ CubePi-based DDR_Bench insight discovery agent.
 This runner mirrors the `.deepagents` single-agent rules:
 
 - system prompt is loaded from `.deepagents/AGENTS.md`;
-- MCP tools are exposed with DDR_Bench-prefixed names such as `ddrbench_sqlite_search` and `ddrbench_code_execute_code`;
+- MCP tools are exposed with DDR_Bench-prefixed names such as `ddrbench_sqlite_execute_query` and `ddrbench_code_execute_code`;
 - tool execution is sequential, matching the "exactly one tool at a time" rule;
 - final output is normalized to the shared insights JSON/CSV schema.
 
