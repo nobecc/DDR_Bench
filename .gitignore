@@ -81,5 +81,5 @@ tmp/
 temp/
 *.tmp
 
-data/10k/company_packages
+data/10k/csv
 data/10k/raw

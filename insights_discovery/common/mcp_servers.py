@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
 import subprocess
 import sys
@@ -27,6 +28,14 @@ def _port_open(port: int, host: str = "127.0.0.1") -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.2)
         return sock.connect_ex((host, port)) == 0
+
+
+def find_available_port(host: str = "127.0.0.1") -> int:
+    """Reserve an OS-selected free port number for an imminent server start."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return int(sock.getsockname()[1])
 
 
 def _wait_for_port(port: int, timeout: float = 10.0) -> None:
@@ -59,14 +68,14 @@ def _source_path(resolution: dict[str, Any], source_type: str) -> str:
     return ""
 
 
-def _scenario_data_path(config_path: Path, scenario: str) -> str:
+def _scenario_code_root(config_path: Path, scenario: str) -> str:
     try:
         import yaml
 
         resolved = config_path if config_path.is_absolute() else REPO_ROOT / config_path
         data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
         scenario_config = (data.get("scenarios") or {}).get(scenario) or {}
-        return str(_resolve_repo_path(scenario_config.get("data_path")) or REPO_ROOT)
+        return str(_resolve_repo_path(scenario_config.get("code_root")) or REPO_ROOT)
     except Exception:
         return str(REPO_ROOT)
 
@@ -110,8 +119,8 @@ def load_scenario_data_source_availability(config_path: Path, scenario: str) -> 
     if not data_sources:
         if scenario_config.get("db_path"):
             data_sources.append({"name": f"{scenario}_sqlite", "type": "sqlite", "path": scenario_config["db_path"]})
-        if scenario_config.get("data_path"):
-            data_sources.append({"name": f"{scenario}_data_path", "type": "csv_directory", "path": scenario_config["data_path"]})
+        if scenario_config.get("code_root"):
+            data_sources.append({"name": f"{scenario}_code_root", "type": "csv_directory", "path": scenario_config["code_root"]})
 
     sources: list[dict[str, Any]] = []
     sqlite_available = False
@@ -181,6 +190,8 @@ def managed_mcp_servers(
     scenario: str,
     log_dir: Path | None = None,
     enabled: bool = True,
+    sqlite_port: int = SQLITE_PORT,
+    code_port: int = CODE_PORT,
 ) -> Iterator[list[subprocess.Popen]]:
     """Start missing DDR_Bench SSE MCP servers and stop only the ones we own."""
     if not enabled:
@@ -192,9 +203,11 @@ def managed_mcp_servers(
     log_handles = []
     log_dir = log_dir or (REPO_ROOT / "logs")
     log_dir.mkdir(parents=True, exist_ok=True)
+    server_env = os.environ.copy()
+    server_env["CUSTOM_LOG_DIR"] = log_dir.as_posix()
 
     try:
-        if SQLITE_SERVER_NAME in active and not _port_open(SQLITE_PORT):
+        if SQLITE_SERVER_NAME in active and not _port_open(sqlite_port):
             db_path = _source_path(resolution, "sqlite")
             if not db_path:
                 db_path = str(REPO_ROOT / "data/10k/raw/10k_financial_data.db")
@@ -209,20 +222,21 @@ def managed_mcp_servers(
                     "--host",
                     "127.0.0.1",
                     "--port",
-                    str(SQLITE_PORT),
+                    str(sqlite_port),
                     "--data-path",
                     db_path,
                 ],
                 cwd=REPO_ROOT,
+                env=server_env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
             processes.append(proc)
-            _wait_for_port(SQLITE_PORT)
+            _wait_for_port(sqlite_port)
 
-        if CODE_SERVER_NAME in active and not _port_open(CODE_PORT):
-            data_path = _scenario_data_path(config_path, scenario)
+        if CODE_SERVER_NAME in active and not _port_open(code_port):
+            code_root = _scenario_code_root(config_path, scenario)
             log_file = (log_dir / "code_mcp_auto.log").open("a", encoding="utf-8")
             log_handles.append(log_file)
             proc = subprocess.Popen(
@@ -234,17 +248,18 @@ def managed_mcp_servers(
                     "--host",
                     "127.0.0.1",
                     "--port",
-                    str(CODE_PORT),
-                    "--data-path",
-                    data_path,
+                    str(code_port),
+                    "--code-root",
+                    code_root,
                 ],
                 cwd=REPO_ROOT,
+                env=server_env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
             processes.append(proc)
-            _wait_for_port(CODE_PORT)
+            _wait_for_port(code_port)
 
         yield processes
     finally:

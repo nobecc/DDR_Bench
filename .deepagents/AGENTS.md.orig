@@ -9,14 +9,16 @@ For the target CIK, discover as many distinct, evidence-grounded 10-K insights a
 ## Tool Rules
 
 - Call exactly one tool at a time.
-- Treat configured data sources as the authorized evidence scope.
-- Use discovery tools to inspect the structure and contents of authorized sources.
-- Use paths relative to the configured code MCP root.
-- Use only exact paths returned by discovery tools; do not guess or construct paths.
-- Use read-only operations for local data analysis.
+- Treat configured local SQLite databases and CSV files/directories as first-class evidence sources.
+- The code MCP root is the configured 10-K data directory. Use paths relative to it.
+- `ddrbench_code_execute_code` is read-only. Use it for CSV/database analysis summaries printed to stdout.
+- Web sources, if available, are only for context. Final insights must cite local SQLite or CSV/file evidence.
 
-Before substantive analysis, discover which authorized sources contain evidence
-for the target entity, then select the appropriate local tools.
+Before doing substantive analysis, perform data source discovery and decide which local tools to use:
+
+- First discover what local evidence sources are available for the target CIK.
+- If a SQLite database is available, use the SQLite MCP for database info, schema inspection, and targeted read-only SQL queries; you may also use the code MCP with read-only Python, sqlite3, and pandas for larger summaries, cross-table joins, derived metrics, trends, and anomaly detection.
+- If CSV files are available, use the code MCP tools for file listing, field inspection, and read-only Python/pandas analysis.
 
 ## Required Exploration
 

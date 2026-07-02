@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -38,11 +38,7 @@ Consider:
 - Financial health indicators: Does it highlight financial strengths or risks?
 - Competitive positioning: Does it clarify market position or advantages?
 - Depth of insight: Does it reveal meaningful patterns or trends?
-- Do not be biased by the length, number of insights, fluency, etc. Just focus on the usefulness of the insights.
-
-Respond in EXACTLY this format (two lines):
-Line 1: One sentence explaining your reasoning (max 100 words)
-Line 2: Your decision - ONLY one of: MODEL_A, MODEL_B, or TIE"""
+- Do not be biased by the length, number of insights, fluency, etc. Just focus on the usefulness of the insights."""
 
 
 TEN_K_NOVELTY_USER = """Insights from Model A:
@@ -50,6 +46,14 @@ TEN_K_NOVELTY_USER = """Insights from Model A:
 
 Insights from Model B:
 {insights_b}
+
+Respond in EXACTLY this format (two lines):
+Line 1: One sentence explaining your reasoning (max 100 words)
+Line 2: Your decision - ONLY one of: MODEL_A, MODEL_B, or TIE
+
+Example:
+Model A provides more specific financial metrics and strategic insights that are more actionable for investment decisions.
+MODEL_A
 
 Your response:"""
 
@@ -63,15 +67,30 @@ class MethodInput:
 
 def parse_method_arg(value: str) -> MethodInput:
     parts = value.split("=", 2)
-    if len(parts) != 3:
-        raise argparse.ArgumentTypeError(
-            "--method must use name=eval_result_json=logs_dir, e.g. cubepi=outputs/cubepi/10k_evaluation_result.json=eval/cubepi_10k"
+    if len(parts) == 2:
+        name, run_dir_value = parts
+        run_dir = Path(run_dir_value)
+        return MethodInput(
+            name=name.strip(),
+            eval_result=run_dir / "10k_evaluation_result_both.json",
+            logs_dir=run_dir,
         )
-    name, eval_result, logs_dir = parts
-    return MethodInput(name=name.strip(), eval_result=Path(eval_result), logs_dir=Path(logs_dir))
+    if len(parts) == 3:
+        name, eval_result, run_dir = parts
+        return MethodInput(
+            name=name.strip(),
+            eval_result=Path(eval_result),
+            logs_dir=Path(run_dir),
+        )
+    raise argparse.ArgumentTypeError(
+        "--method must use name=run_dir, e.g. "
+        "cubepi=outputs/cubepi/runs_20260702_112225"
+    )
 
 
 def load_insights(csv_path: Path) -> List[Dict[str, str]]:
+    """Use the checklist evaluator's filtering and zero-based message indices."""
+
     with csv_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     insights = []
@@ -79,49 +98,6 @@ def load_insights(csv_path: Path) -> List[Dict[str, str]]:
         insight = (row.get("insight") or "").strip()
         if not insight or "NO INSIGHT" in insight.upper():
             continue
-        try:
-            data = json.loads(insight)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict) and isinstance(data.get("insights"), list):
-            for item in data["insights"]:
-                if isinstance(item, str):
-                    item = {"insight": item}
-                if not isinstance(item, dict):
-                    continue
-                nested_insight = (item.get("insight") or "").strip()
-                if not nested_insight:
-                    continue
-                insights.append({
-                    "index": len(insights),
-                    "topic": (item.get("topic") or row.get("assistant_message") or "").strip(),
-                    "insight": nested_insight,
-                })
-            continue
-        if insight.lstrip().startswith("{") and '"insights"' in insight:
-            matches = re.findall(
-                r'"topic"\s*:\s*"((?:\\.|[^"\\])*)".*?"insight"\s*:\s*"((?:\\.|[^"\\])*)"',
-                insight,
-                flags=re.DOTALL,
-            )
-            if matches:
-                for topic, nested_insight in matches:
-                    try:
-                        topic = json.loads(f'"{topic}"')
-                    except json.JSONDecodeError:
-                        topic = topic.replace('\\"', '"')
-                    try:
-                        nested_insight = json.loads(f'"{nested_insight}"')
-                    except json.JSONDecodeError:
-                        nested_insight = nested_insight.replace('\\"', '"')
-                    nested_insight = nested_insight.strip()
-                    if nested_insight:
-                        insights.append({
-                            "index": len(insights),
-                            "topic": topic.strip(),
-                            "insight": nested_insight,
-                        })
-                continue
         insights.append({
             "index": len(insights),
             "topic": (row.get("assistant_message") or "").strip(),
@@ -130,11 +106,11 @@ def load_insights(csv_path: Path) -> List[Dict[str, str]]:
     return insights
 
 
-def used_indices(entity_result: Dict[str, Any], unused_mode: str) -> set[int]:
+def used_indices(entity_result: Dict[str, Any]) -> set[int]:
+    """Return insights used by any checklist item, matching the paper protocol."""
+
     used: set[int] = set()
     for qa_result in entity_result.get("message_wise_context_results", []):
-        if unused_mode == "unused_from_insufficient_qas" and qa_result.get("context_quality") != "INSUFFICIENT_INFO":
-            continue
         for key in ("supporting_message_indices", "contradicting_message_indices"):
             for value in qa_result.get(key, []) or []:
                 try:
@@ -144,19 +120,43 @@ def used_indices(entity_result: Dict[str, Any], unused_mode: str) -> set[int]:
     return used
 
 
-def extract_method_novel_insights(method: MethodInput, unused_mode: str) -> Dict[str, Dict[str, Any]]:
+def resolve_insights_file(run_dir: Path, entity_id: str) -> Path | None:
+    entity_dir = run_dir / f"company_{entity_id}"
+    candidates = sorted(entity_dir.glob("insights*.csv"))
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        raise RuntimeError(
+            f"Multiple insight files found for company_{entity_id} under {run_dir}; "
+            "use a clean runs_* directory so checklist and novelty indices cannot diverge."
+        )
+    return candidates[0]
+
+
+def extract_method_novel_insights(method: MethodInput) -> Dict[str, Dict[str, Any]]:
     eval_data = json.load(method.eval_result.open(encoding="utf-8"))
+    context_mode = eval_data.get("evaluation_metadata", {}).get("context_mode")
+    if context_mode == "chat-wise":
+        raise ValueError(
+            f"{method.eval_result} contains only chat-wise results; novelty evaluation "
+            "requires message-wise or both checklist evaluation."
+        )
     by_entity = {}
     for entity_result in eval_data.get("entity_results", []):
         entity_id = str(entity_result.get("entity_id", ""))
         if not entity_id:
             continue
-        insights_file = method.logs_dir / f"company_{entity_id}" / "insights_research.csv"
-        if not insights_file.exists():
-            LOGGER.warning("Missing insights file for %s/%s: %s", method.name, entity_id, insights_file)
+        insights_file = resolve_insights_file(method.logs_dir, entity_id)
+        if insights_file is None:
+            LOGGER.warning(
+                "Missing insights file for %s/%s under %s",
+                method.name,
+                entity_id,
+                method.logs_dir,
+            )
             continue
         insights = load_insights(insights_file)
-        used = used_indices(entity_result, unused_mode)
+        used = used_indices(entity_result)
         novel = [item for item in insights if int(item["index"]) not in used]
         valid_used = sorted(index for index in used if 0 <= index < len(insights))
         by_entity[entity_id] = {
@@ -173,17 +173,13 @@ def extract_method_novel_insights(method: MethodInput, unused_mode: str) -> Dict
         }
     return by_entity
 
-
-def format_insight_set(items: List[Dict[str, Any]], max_chars: int) -> str:
+def format_insight_set(items: List[Dict[str, Any]]) -> str:
     lines = []
     for display_index, item in enumerate(items, 1):
         topic = item.get("topic") or f"Insight {item.get('index')}"
-        text = item.get("insight", "")
-        lines.append(f"{display_index}. {topic}: {text}")
-    rendered = "\n".join(lines) if lines else "(No unused insights.)"
-    if len(rendered) <= max_chars:
-        return rendered
-    return rendered[:max_chars].rstrip() + "\n...[truncated]"
+        insight = item.get("insight", "")
+        lines.append(f"{display_index}. {topic}: {insight}")
+    return "\n".join(lines) if lines else "(No unused insights.)"
 
 
 def build_judge(config_path: str, provider: str = "", model: str = "") -> BaseEvaluator:
@@ -219,7 +215,6 @@ def compare_pair(
     insights_a: List[Dict[str, Any]],
     insights_b: List[Dict[str, Any]],
     rng: random.Random,
-    max_chars: int,
 ) -> Dict[str, Any]:
     swapped = rng.random() < 0.5
     presented_a_method = method_b if swapped else method_a
@@ -232,8 +227,8 @@ def compare_pair(
         {
             "role": "user",
             "content": TEN_K_NOVELTY_USER.format(
-                insights_a=format_insight_set(presented_a, max_chars),
-                insights_b=format_insight_set(presented_b, max_chars),
+                insights_a=format_insight_set(presented_a),
+                insights_b=format_insight_set(presented_b),
             ),
         },
     ]
@@ -344,17 +339,15 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=parse_method_arg,
         required=True,
-        help="Repeatable: name=eval_result_json=logs_dir",
+        help="Repeatable: name=run_dir (legacy name=eval_result_json=run_dir is also accepted)",
     )
     parser.add_argument("--output-dir", default="./outputs/novelty_eval")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--provider", default="")
     parser.add_argument("--model", default="")
     parser.add_argument("--scenario", default="10k", choices=["10k"])
-    parser.add_argument("--unused-mode", default="unused_from_insufficient_qas", choices=["all_unused", "unused_from_insufficient_qas"])
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--max-insights-chars", type=int, default=12000)
     parser.add_argument("--dry-run", action="store_true", help="Only extract unused insights; do not call the judge")
     return parser.parse_args()
 
@@ -370,7 +363,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     novel_by_method = {
-        method.name: extract_method_novel_insights(method, args.unused_mode)
+        method.name: extract_method_novel_insights(method)
         for method in args.method
     }
     manifest_path = output_dir / "novel_insights_manifest.csv"
@@ -400,7 +393,6 @@ def main() -> None:
                     insights_a,
                     insights_b,
                     rng,
-                    args.max_insights_chars,
                 )
                 outcome["repeat"] = repeat
                 outcomes.append(outcome)
@@ -451,7 +443,7 @@ def main() -> None:
                 "methods": method_names,
                 "entity_count": len(common_entities),
                 "comparison_count": len(outcomes),
-                "unused_mode": args.unused_mode,
+                "unused_definition": "not_used_by_any_checklist_item",
                 "summary": summary_rows,
             },
             ensure_ascii=False,

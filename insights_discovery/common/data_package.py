@@ -44,24 +44,6 @@ def package_paths(cik: str, package_dir: Path) -> list[Path]:
     ]
 
 
-def existing_10k_company_package(cik: str, package_dir: Path) -> list[Path]:
-    paths = package_paths(cik, package_dir)
-    missing = [path for path in paths if not path.exists()]
-    if missing:
-        raise FileNotFoundError(
-            "Precomputed data package is incomplete. Missing: "
-            + ", ".join(str(path) for path in missing)
-        )
-    return paths
-
-
-def resolve_package_dir(root_or_package_dir: str | Path, cik: str) -> Path:
-    path = Path(root_or_package_dir)
-    if (path / f"company_{cik}_schema.json").exists():
-        return path
-    return path / f"company_{cik}"
-
-
 CORE_FACT_NAMES = [
     "Revenues",
     "RevenueFromContractWithCustomerExcludingAssessedTax",

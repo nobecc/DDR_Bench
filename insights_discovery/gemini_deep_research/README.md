@@ -44,20 +44,12 @@ Run a batch:
 
 Optional uploaded data package mode:
 
-Precompute reusable packages once:
-
-```bash
-./.venv/bin/python insights_discovery/common/export_data_packages.py \
-  --output-dir ./data/10k/company_packages
-```
-
 MCP plus uploaded SQLite-export documents:
 
 ```bash
 ./.venv/bin/python insights_discovery/gemini_deep_research/run_single.py \
   --cik 6201 \
   --mcp-url https://feeble-anyway-barbed.ngrok-free.dev/sse \
-  --data-package-dir ./data/10k/company_packages \
   --output-file ./outputs/gemini_deep_research/company_6201/insights.json \
   --api-timeout 0 \
   --use-data-package \
@@ -70,7 +62,6 @@ Pure uploaded-data mode, with no DDR_Bench MCP exposed to Gemini:
 ./.venv/bin/python insights_discovery/gemini_deep_research/run_single.py \
   --cik 6201 \
   --data-package-only \
-  --data-package-dir ./data/10k/company_packages \
   --output-file ./outputs/gemini_deep_research_data_package/company_6201/insights.json \
   --api-timeout 0 \
   --min-data-tool-calls 0 \
@@ -85,15 +76,10 @@ stored by Gemini for 48 hours.
 Evaluate:
 
 ```bash
-./.venv/bin/python insights_discovery/common/prepare_eval.py \
-  --source-dir ./outputs/gemini_deep_research \
-  --output-dir ./logs/gemini_deep_research_10k \
-  --manifest ./logs/gemini_deep_research_10k/prepare_manifest.json
-
 ./.venv/bin/python insights_discovery/common/evaluate_checklist.py \
   --scenario 10k \
-  --logs-dir ./logs/gemini_deep_research_10k \
-  --output ./outputs/gemini_deep_research_10k_evaluation_result.json \
+  --source-dir ./outputs/gemini_deep_research \
+  --output-dir ./outputs \
   --context-mode both
 ```
 

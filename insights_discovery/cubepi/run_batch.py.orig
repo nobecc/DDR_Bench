@@ -71,7 +71,7 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
 
 if __name__ == "__main__":
     args = parse_args()
-    args.output_dir = str(ensure_run_dir(Path(args.output_dir)).resolve())
+    args.output_dir = str(ensure_run_dir(Path(args.output_dir)))
     print(f"CubePi run directory: {args.output_dir}")
     run_subprocess_batch(
         args,

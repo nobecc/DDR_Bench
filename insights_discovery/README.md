@@ -5,15 +5,14 @@ This directory organizes agent-specific scripts for DDR_Bench insight discovery.
 The common contract is:
 
 1. Run an agent for each 10-K CIK from `data/10k/entity_ids.json`.
-2. Save each company output as:
-   `outputs/<agent_name>/company_<cik>/insights.json`
-3. Convert those insights to DDR_Bench evaluation logs.
+2. Save native per-tool and final-summary artifacts under each company.
+3. Use those trajectory artifacts directly as DDR_Bench evaluation logs.
 4. Run checklist evaluation and read the selected context-mode statistics.
 5. Optionally run pairwise novelty evaluation on unused insights.
 
 ## Agents
 
-- `common/`: reusable output normalization, local tools, batch execution, evaluation preparation, checklist evaluation, and pairwise novelty evaluation.
+- `common/`: reusable trajectory generation, local tools, batch execution, checklist evaluation, and pairwise novelty evaluation.
 - `openai_o4_mini_deep_research/`: implemented OpenAI-compatible runner for `openai/o4-mini-deep-research`.
 - `gemini_deep_research/`: planned.
 - `dcode/`: Deep Agents Code runner driven by `.deepagents/` project config.
@@ -26,37 +25,22 @@ Each agent must write to its own output namespace:
 ```text
 outputs/openai_o4_mini_deep_research/company_<cik>/insights.json
 outputs/gemini_deep_research/company_<cik>/insights.json
-outputs/dcode/company_<cik>/insights.json
-outputs/cubepi/company_<cik>/insights.json
-```
-
-Prepared DDR_Bench evaluation logs should also stay separate:
-
-```text
-logs/openai_o4_mini_deep_research_10k/company_<cik>/insights_research.csv
-logs/gemini_deep_research_10k/company_<cik>/insights_research.csv
-logs/dcode_10k/company_<cik>/insights_research.csv
-logs/cubepi_10k/company_<cik>/insights_research.csv
+outputs/dcode/runs_<timestamp>/company_<cik>/insights_<timestamp>.csv
+outputs/cubepi/runs_<timestamp>/company_<cik>/insights_<timestamp>.csv
 ```
 
 ## Common Evaluation Flow
 
-Prepare evaluation logs:
-
-```bash
-./.venv/bin/python insights_discovery/common/prepare_eval.py \
-  --source-dir ./outputs/openai_o4_mini_deep_research \
-  --output-dir ./logs/openai_o4_mini_deep_research_10k \
-  --manifest ./logs/openai_o4_mini_deep_research_10k/prepare_manifest.json
-```
-
-Run checklist evaluation:
+Run evaluation against a method root or a specific `runs_*` experiment
+directory. A method root automatically resolves to its latest run. The result
+is saved inside the selected run directory as
+`10k_evaluation_result_<context_mode>.json`. CubePI and D-Code evaluation
+requires native `insights_*.csv` and `session_stats_*.json` artifacts.
 
 ```bash
 ./.venv/bin/python insights_discovery/common/evaluate_checklist.py \
   --scenario 10k \
-  --logs-dir ./logs/openai_o4_mini_deep_research_10k \
-  --output ./outputs/openai_o4_mini_deep_research_10k_evaluation_result.json \
+  --source-dir ./outputs/cubepi \
   --context-mode both
 ```
 
@@ -64,7 +48,7 @@ Run pairwise novelty evaluation:
 
 ```bash
 ./.venv/bin/python insights_discovery/common/evaluate_novelty_pairwise.py \
-  --method openai_o4_mini_deep_research=./outputs/openai_o4_mini_deep_research_10k_evaluation_result.json=./logs/openai_o4_mini_deep_research_10k \
-  --method cubepi=./outputs/cubepi_10k_evaluation_result.json=./logs/cubepi_10k \
+  --method cubepi=./outputs/cubepi/runs_<timestamp> \
+  --method dcode=./outputs/dcode/runs_<timestamp> \
   --output-dir ./outputs/novelty_eval
 ```

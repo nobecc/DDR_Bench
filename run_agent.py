@@ -10,7 +10,7 @@ Single entry point for running data analysis agents across all scenarios:
 Usage:
     python run_agent.py --scenario mimic --db-path /path/to/mimic_iv.db --input /path/to/notes.json
     python run_agent.py --scenario 10k --db-path /path/to/10k.db
-    python run_agent.py --scenario globem --data-path /path/to/globem/data
+    python run_agent.py --scenario globem
 
 See README.md for detailed usage instructions.
 """
@@ -90,8 +90,7 @@ class PatientBatchAnalyzer(BaseBatchAnalyzer):
         # MCP arguments: Only pass server script, agent will load config for DB path
         cmd.extend(["--sql-server", "tool_server/sqlite_mcp.py"])
         
-        # We do NOT pass --data-path override unless specific need, but user said NO overrides.
-        # So we trust config.yaml loaded by sqlite_mcp.py via --config
+        # Trust db_path from config.yaml, loaded by sqlite_mcp.py via --config.
         
         # Pass max_turns if provided
         if kwargs.get("max_turns"):
@@ -339,8 +338,8 @@ Examples:
         parser.error("db_path for mimic not found in config.yaml")
     if args.scenario == "10k" and not scenario_config.db_path:
         parser.error("db_path for 10k not found in config.yaml")
-    if args.scenario == "globem" and not scenario_config.data_path:
-        parser.error("data_path for globem not found in config.yaml")
+    if args.scenario == "globem" and not scenario_config.code_root:
+        parser.error("code_root for globem not found in config.yaml")
         
     # Create analyzer based on scenario
     if args.scenario == "mimic":

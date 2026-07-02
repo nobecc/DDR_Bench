@@ -23,7 +23,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.getenv("DEEPANALYZE_API_KEY", ""))
     parser.add_argument("--model", default=os.getenv("DEEPANALYZE_MODEL", "DeepAnalyze-8B"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--min-insights", type=int, default=20)
     parser.add_argument("--temperature", type=float, default=0.4)
@@ -52,8 +51,6 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
     ]
     if args.api_key:
         extra.extend(["--api-key", args.api_key])
-    if args.data_package_dir:
-        extra.extend(["--data-package-dir", args.data_package_dir])
     if args.dump_raw_response:
         extra.append("--dump-raw-response")
     return extra

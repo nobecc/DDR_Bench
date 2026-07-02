@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "openai/o4-mini-deep-research"))
     parser.add_argument("--mcp-url", default=os.getenv("SQLITE_MCP_URL", "http://127.0.0.1:8765/sse"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="")
     parser.add_argument("--file-root", action="append")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--max-steps", type=int, default=20)
@@ -92,8 +91,6 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
         extra.append("--allow-web-search")
     if args.use_code_interpreter:
         extra.append("--use-code-interpreter")
-    if args.data_package_dir:
-        extra.extend(["--data-package-dir", args.data_package_dir])
     if args.use_data_package:
         extra.append("--use-data-package")
     if args.data_package_only:

@@ -672,9 +672,9 @@ async def main():
         help="SSE message POST path"
     )
     parser.add_argument(
-        "--data-path",
+        "--code-root",
         default=None,
-        help="Base path for data files (default: current directory)"
+        help="Root directory exposed to Code MCP (default: current directory)"
     )
     parser.add_argument(
         "--config",
@@ -698,11 +698,9 @@ async def main():
     
     args = parser.parse_args()
     
-    # Resolve data path
-    data_path = args.data_path
+    code_root = args.code_root
     
-    # Try to load from config if scenario is provided and data_path is missing
-    if not data_path and args.scenario:
+    if not code_root and args.scenario:
         try:
             # Add parent directory to path to find config module
             sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -710,19 +708,19 @@ async def main():
             
             config = get_config(args.config)
             scenario_config = config.get_scenario(args.scenario)
-            if scenario_config.data_path:
-                data_path = scenario_config.data_path
-                print(f"Loaded data_path from config for scenario '{args.scenario}': {data_path}")
+            if scenario_config.code_root:
+                code_root = scenario_config.code_root
+                print(f"Loaded code_root from config for scenario '{args.scenario}': {code_root}")
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
             
     # Fallback to environment variable or default
-    if not data_path:
-        data_path = os.getenv('MCP_DATA_PATH', ".")
+    if not code_root:
+        code_root = os.getenv('MCP_CODE_ROOT', ".")
     
     try:
         server = CodeMCPServer(
-            data_path, 
+            code_root,
             enable_detailed_logging=not args.disable_detailed_logging
         )
         await server.run(

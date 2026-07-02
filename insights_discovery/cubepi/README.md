@@ -32,7 +32,7 @@ For CSV/file analysis:
   --transport sse \
   --host 127.0.0.1 \
   --port 8766 \
-  --data-path ./data/10k
+  --code-root ./data/10k
 ```
 
 ## Run one company
@@ -42,7 +42,10 @@ uv run python insights_discovery/cubepi/run_single.py \
   --provider openai \
   --model gpt-5.5 \
   --cik 6201 \
-  --output-file outputs/cubepi/company_6201/insights.json
+  --insight-max-tokens 512 \
+  --summary-max-tokens 16384 \
+  --insight-temperature 0.5 \
+  --output-dir outputs/cubepi
 ```
 
 For an OpenAI-compatible gateway, set `MODEL_BASE_URL` and `MODEL_API_KEY`, or pass `--base-url` and `--api-key`.
@@ -54,7 +57,7 @@ uv run python insights_discovery/cubepi/run_single.py \
   --provider anthropic \
   --model claude-sonnet-4-6 \
   --cik 6201 \
-  --output-file outputs/cubepi/company_6201/insights.json
+  --output-dir outputs/cubepi
 ```
 
 ## Run a batch
@@ -65,12 +68,21 @@ uv run python insights_discovery/cubepi/run_batch.py \
   --model gpt-5.5
 ```
 
-Batch outputs follow the shared layout:
+Single and batch runs create one timestamped experiment directory. Every
+company in the same batch shares that directory:
 
 ```text
-outputs/cubepi/company_<cik>/insights.json
-outputs/cubepi/company_<cik>/insights.csv
-outputs/cubepi/company_<cik>/prompt.txt
-outputs/cubepi/company_<cik>/run.log
-outputs/cubepi/batch_manifest.json
+outputs/cubepi/runs_<timestamp>/company_<cik>/prompt.txt
+outputs/cubepi/runs_<timestamp>/company_<cik>/run.log
+outputs/cubepi/runs_<timestamp>/company_<cik>/insights_<timestamp>.csv
+outputs/cubepi/runs_<timestamp>/company_<cik>/chat_messages_<timestamp>.csv
+outputs/cubepi/runs_<timestamp>/company_<cik>/session_stats_<timestamp>.json
+outputs/cubepi/runs_<timestamp>/company_<cik>/trajectory_<timestamp>.jsonl
+outputs/cubepi/runs_<timestamp>/company_<cik>/sqlite-mcp_calls_<timestamp>.csv
+outputs/cubepi/runs_<timestamp>/company_<cik>/code-mcp_calls_<timestamp>.csv
+outputs/cubepi/runs_<timestamp>/batch_manifest.json
 ```
+
+The timestamped files use the same message-wise and chat-wise artifact
+contract as the ReAct runner. Insight and final-summary generation reuse the
+CubePI exploration model.

@@ -47,19 +47,11 @@ Run a batch:
 
 Optional SQLite-export data package mode:
 
-Precompute reusable packages once:
-
-```bash
-./.venv/bin/python insights_discovery/common/export_data_packages.py \
-  --output-dir ./data/10k/company_packages
-```
-
 ```bash
 ./.venv/bin/python insights_discovery/openai_o4_mini_deep_research/run_single.py \
   --cik 6201 \
   --mcp-url https://feeble-anyway-barbed.ngrok-free.dev/sse \
   --output-file ./outputs/openai_o4_mini_deep_research/company_6201/insights.json \
-  --data-package-dir ./data/10k/company_packages \
   --data-package-profile compact \
   --file-input-mode base64 \
   --api-timeout 0 \
@@ -74,7 +66,6 @@ Pure uploaded-data mode, with no DDR_Bench MCP exposed to the model:
 ./.venv/bin/python insights_discovery/openai_o4_mini_deep_research/run_single.py \
   --cik 6201 \
   --output-file ./outputs/openai_o4_mini_deep_research_data_package/company_6201/insights.json \
-  --data-package-dir ./data/10k/company_packages \
   --data-package-profile compact \
   --file-input-mode base64 \
   --api-timeout 0 \
@@ -102,14 +93,9 @@ public HTTPS MCP access is inconvenient.
 Evaluate:
 
 ```bash
-./.venv/bin/python insights_discovery/common/prepare_eval.py \
-  --source-dir ./outputs/openai_o4_mini_deep_research \
-  --output-dir ./logs/openai_o4_mini_deep_research_10k \
-  --manifest ./logs/openai_o4_mini_deep_research_10k/prepare_manifest.json
-
 ./.venv/bin/python insights_discovery/common/evaluate_checklist.py \
   --scenario 10k \
-  --logs-dir ./logs/openai_o4_mini_deep_research_10k \
-  --output ./outputs/openai_o4_mini_deep_research_10k_evaluation_result.json \
+  --source-dir ./outputs/openai_o4_mini_deep_research \
+  --output-dir ./outputs \
   --context-mode message-wise
 ```

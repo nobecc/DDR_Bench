@@ -42,9 +42,7 @@ from insights_discovery.common.output import (  # noqa: E402
     write_outputs,
 )
 from insights_discovery.common.data_package import (  # noqa: E402
-    existing_10k_company_package,
     export_10k_company_package,
-    resolve_package_dir,
 )
 from insights_discovery.common.tools import build_gemini_mcp_tools  # noqa: E402
 
@@ -508,12 +506,8 @@ def run_agent(args: argparse.Namespace) -> str:
     uploaded_files: List[Dict[str, str]] = []
 
     if args.use_data_package:
-        if args.data_package_dir:
-            package_dir = resolve_package_dir(args.data_package_dir, args.cik or "")
-            data_package_paths = existing_10k_company_package(args.cik or "", package_dir)
-        else:
-            package_dir = output_path(args).parent / "gemini_input"
-            data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
+        package_dir = output_path(args).parent / "gemini_input"
+        data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
         uploaded_files = [upload_gemini_file(args, path) for path in data_package_paths]
 
     instructions = build_insight_mining_prompt(
@@ -617,7 +611,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("GEMINI_DEEP_RESEARCH_AGENT", "deep-research-preview-04-2026"))
     parser.add_argument("--mcp-url", default=os.getenv("SQLITE_MCP_URL", "http://127.0.0.1:8765/sse"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="", help="Precomputed package root or company package dir. If set, files are reused instead of exported from --db.")
     parser.add_argument("--file-root", action="append", help="Accepted for CLI parity; Gemini remote MCP cannot read local paths directly.")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--max-steps", type=int, default=20)
@@ -639,7 +632,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-web-search", action="store_true")
     parser.add_argument("--use-code-execution", action="store_true")
     parser.add_argument("--use-code-interpreter", dest="use_code_execution", action="store_true", help="Alias for OpenAI runner parity.")
-    parser.add_argument("--use-data-package", action="store_true", help="Export or reuse target CIK rows, upload them via Gemini Files API, and attach them as document inputs.")
+    parser.add_argument("--use-data-package", action="store_true", help="Export target CIK rows, upload them via Gemini Files API, and attach them as document inputs.")
     parser.add_argument("--data-package-only", action="store_true", help="Use only uploaded SQLite-export document inputs; do not expose the MCP server.")
     parser.add_argument("--thinking-summaries", default="auto", choices=["auto", "none"])
     parser.add_argument("--dump-raw-response", action="store_true")

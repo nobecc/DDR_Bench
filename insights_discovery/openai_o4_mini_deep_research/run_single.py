@@ -46,9 +46,7 @@ from insights_discovery.common.output import (  # noqa: E402
     write_outputs,
 )
 from insights_discovery.common.data_package import (  # noqa: E402
-    existing_10k_company_package,
     export_10k_company_package,
-    resolve_package_dir,
 )
 from insights_discovery.common.tools import build_openai_mcp_tools  # noqa: E402
 
@@ -780,12 +778,8 @@ def run_agent(args: argparse.Namespace) -> str:
     data_package_paths: List[Path] = []
 
     if args.use_data_package:
-        if args.data_package_dir:
-            package_dir = resolve_package_dir(args.data_package_dir, args.cik or "")
-            all_data_package_paths = existing_10k_company_package(args.cik or "", package_dir)
-        else:
-            package_dir = output_path(args).parent / "openai_input"
-            all_data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
+        package_dir = output_path(args).parent / "openai_input"
+        all_data_package_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
         data_package_paths = select_data_package_paths(args, all_data_package_paths)
         if args.file_input_mode == "upload":
             file_ids = [upload_openai_file(args, path) for path in data_package_paths]
@@ -896,7 +890,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("MODEL_NAME", "openai/o4-mini-deep-research"))
     parser.add_argument("--mcp-url", default=os.getenv("SQLITE_MCP_URL", "http://127.0.0.1:8765/sse"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="", help="Precomputed package root or company package dir. If set, files are reused instead of exported from --db.")
     parser.add_argument("--file-root", action="append", help="Local path to search; repeatable")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--max-steps", type=int, default=20)

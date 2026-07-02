@@ -865,7 +865,7 @@ async def main():
     
     # MCP server configuration
     parser.add_argument("--sql-server", help="Path to SQL MCP server script")
-    parser.add_argument("--data-path", help="Data path for MCP servers")
+    parser.add_argument("--code-root", help="Root directory exposed to Code MCP")
     parser.add_argument("--code-server", help="Path to Code MCP server script")
     parser.add_argument("--servers", help="JSON file with MCP server configurations")
     
@@ -927,8 +927,6 @@ async def main():
         if args.sql_server:
             # Build arguments for SQL server
             sql_args = []
-            if args.data_path:
-                sql_args.extend(["--data-path", args.data_path])
             if args.config:
                 sql_args.extend(["--config", args.config])
             if args.scenario:
@@ -944,8 +942,8 @@ async def main():
         if args.code_server:
             # Build arguments for Code server
             code_args = []
-            if args.data_path:
-                code_args.extend(["--data-path", args.data_path])
+            if args.code_root:
+                code_args.extend(["--code-root", args.code_root])
             if args.config:
                 code_args.extend(["--config", args.config])
             if args.scenario:

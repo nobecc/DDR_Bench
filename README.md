@@ -80,7 +80,7 @@ python run_agent.py --scenario globem
 
 It will create a log directory at ``base_log_dir`` from ``config.yaml``, where all the agent trajectories, run metadata and insights are stored. The log directory is then used by the evaluation script to evaluate the agent's performance.
 
-> **Note**: Path configurations (`db_path`, `data_path`) and LLM settings (`provider`, `model`, `api_key`) should be set in `config.yaml`.
+> **Note**: Path configurations (`db_path`, `code_root`) and LLM settings (`provider`, `model`, `api_key`) should be set in `config.yaml`.
 
 ## Run the Evaluation
 
@@ -118,7 +118,7 @@ scenarios:
   10k:
     db_path: "/path/to/10k_financial_data.db" # Download from https://huggingface.co/datasets/thinkwee/DDRBench_10K/tree/main/raw
   globem:
-    data_path: "/path/to/globem_data/" # Download from physionet.org, coming soon
+    code_root: "/path/to/globem_data/" # Download from physionet.org, coming soon
 ```
 
 ### Environment Variables
@@ -148,4 +148,4 @@ Set up your API keys as environment variables:
   - Access also requires certification from PhysioNet.
   - Obtain certification and download the data from https://physionet.org/content/globem/1.1/
   - Use ``scripts/process_globem.py`` to preprocess the data
-  - Update ``scenarios.globem.data_path`` in ``config.yaml`` to point to the processed data directory
+  - Update ``scenarios.globem.code_root`` in ``config.yaml`` to point to the processed data directory

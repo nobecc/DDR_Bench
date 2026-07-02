@@ -16,20 +16,11 @@ sudo python API/start_server.py
 
 Run one company from `DDR_Bench`:
 
-Precompute reusable input packages once:
-
-```bash
-cd /mnt/shared-storage-user/chenbei/DDR_Bench
-./.venv/bin/python insights_discovery/common/export_data_packages.py \
-  --output-dir ./data/10k/company_packages
-```
-
 ```bash
 cd /mnt/shared-storage-user/chenbei/DDR_Bench
 ./.venv/bin/python insights_discovery/deepanalyze/run_single.py \
   --cik 6201 \
   --deepanalyze-url http://localhost:8200/v1 \
-  --data-package-dir ./data/10k/company_packages \
   --output-file ./outputs/deepanalyze/company_6201/insights.json \
   --min-insights 20 \
   --dump-raw-response
@@ -41,19 +32,9 @@ Run a batch:
 cd /mnt/shared-storage-user/chenbei/DDR_Bench
 ./.venv/bin/python insights_discovery/deepanalyze/run_batch.py \
   --deepanalyze-url http://localhost:8200/v1 \
-  --data-package-dir ./data/10k/company_packages \
   --output-dir ./outputs/deepanalyze \
   --limit 20 \
   --timeout 36000
-```
-
-Prepare eval CSVs:
-
-```bash
-./.venv/bin/python insights_discovery/common/prepare_eval.py \
-  --source-dir ./outputs/deepanalyze \
-  --output-dir ./eval/deepanalyze_10k \
-  --manifest ./eval/deepanalyze_10k/prepare_manifest.json
 ```
 
 Evaluate:
@@ -61,8 +42,8 @@ Evaluate:
 ```bash
 ./.venv/bin/python insights_discovery/common/evaluate_checklist.py \
   --scenario 10k \
-  --logs-dir ./eval/deepanalyze_10k \
-  --output ./outputs/deepanalyze_10k_evaluation_result.json \
+  --source-dir ./outputs/deepanalyze \
+  --output-dir ./outputs \
   --context-mode message-wise
 ```
 

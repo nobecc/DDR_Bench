@@ -45,9 +45,7 @@ from insights_discovery.common.output import (  # noqa: E402
     write_outputs,
 )
 from insights_discovery.common.data_package import (  # noqa: E402
-    existing_10k_company_package,
     export_10k_company_package,
-    resolve_package_dir,
 )
 
 
@@ -415,19 +413,13 @@ def run_agent(args: argparse.Namespace) -> str:
     task = build_task(args.cik or "", args.question or "")
     output_file = output_path(args)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    if args.data_package_dir:
-        package_dir = resolve_package_dir(args.data_package_dir, args.cik or "")
-    else:
-        package_dir = output_file.parent / "deepanalyze_input"
+    package_dir = output_file.parent / "deepanalyze_input"
 
     prompt = PROMPT_TEMPLATE.format(task=task, cik=args.cik or "", min_insights=args.min_insights)
     (output_file.parent / "prompt.md").write_text(prompt, encoding="utf-8")
 
     started_at = time.time()
-    if args.data_package_dir:
-        file_paths = existing_10k_company_package(args.cik or "", package_dir)
-    else:
-        file_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
+    file_paths = export_10k_company_package(args.db, args.cik or "", package_dir)
     file_ids = [upload_file(args, path) for path in file_paths]
     response = chat_completion(args, prompt, file_ids)
     if args.dump_raw_response:
@@ -468,7 +460,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.getenv("DEEPANALYZE_API_KEY", ""))
     parser.add_argument("--model", default=os.getenv("DEEPANALYZE_MODEL", "DeepAnalyze-8B"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="", help="Precomputed package root or company package dir. If set, files are reused instead of exported from --db.")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--cik", help="10-K company CIK. Builds the task: Analyze company with CIK {cik}")
     parser.add_argument("--question", help="Optional custom task override. If omitted, --cik is required.")

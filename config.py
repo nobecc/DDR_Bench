@@ -19,7 +19,7 @@ class ScenarioConfig:
     """Configuration for a specific scenario."""
     name: str
     db_path: str = ""
-    data_path: str = ""
+    code_root: str = ""
     data_sources: List[Dict[str, Any]] = field(default_factory=list)
     qa_file: str = ""
     input_file: str = ""
@@ -158,7 +158,7 @@ class Config:
                 self.scenarios[name] = ScenarioConfig(
                     name=name,
                     db_path=scenario_data.get("db_path", ""),
-                    data_path=scenario_data.get("data_path", ""),
+                    code_root=scenario_data.get("code_root", ""),
                     data_sources=scenario_data.get("data_sources", []),
                     qa_file=scenario_data.get("qa_file", ""),
                     input_file=scenario_data.get("input_file", ""),
@@ -217,7 +217,7 @@ class Config:
         if "globem" not in self.scenarios:
             self.scenarios["globem"] = ScenarioConfig(
                 name="globem",
-                data_path="",  # User must configure
+                code_root="",  # User must configure
                 id_file="",  # User must configure
                 qa_file="",  # User must configure
                 log_dir="./globem_logs",

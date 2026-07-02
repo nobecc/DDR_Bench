@@ -22,12 +22,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from insights_discovery.common.mcp_servers import managed_mcp_servers
+from insights_discovery.common.insight_generation_helper import (
+    InsightGenerationSettings,
+    generate_artifacts,
+    run_async,
+    session_timestamp,
+)
+from insights_discovery.dcode.trajectory_hook import parse_events
+from insights_discovery.common.run_directories import ensure_run_dir
 
 
-DEFAULT_OUTPUT_ROOT = Path("outputs/dcode/test")
+DEFAULT_OUTPUT_ROOT = Path("outputs/dcode")
 DEFAULT_CONFIG = Path("config.yaml")
 DEFAULT_SCENARIO = "10k"
-PROJECT_MCP_CONFIG = Path(".deepagents/.mcp.json")
 SQLITE_MCP_SERVER = {
     "type": "sse",
     "url": "http://127.0.0.1:8765/sse",
@@ -38,8 +45,8 @@ CODE_MCP_SERVER = {
 }
 DEFAULT_PROMPT_TEMPLATE = (
     "Analyze company with CIK {cik}. "
-    "Produce at least 20 high-value insights. "
-    "Save final JSON to {output_path}."
+    "Explore enough local evidence to support at least 20 distinct high-value "
+    "findings."
 )
 
 MCP_COMPAT_SITE_CUSTOMIZE = '''"""DDR_Bench local compatibility shims for the project virtualenv."""
@@ -122,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Run even when insights.json already exists and is valid JSON.",
+        help="Run even when completed trajectory artifacts already exist.",
     )
     parser.add_argument(
         "--dry-run",
@@ -175,19 +182,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--annotate-output",
-        action="store_true",
-        help=(
-            "Also add run_metadata to insights.json. Off by default to keep "
-            "DDR evaluation input clean."
-        ),
-    )
-    parser.add_argument(
         "--extra-arg",
         action="append",
         default=[],
         help="Extra argument passed to dcode. Repeat for multiple args.",
     )
+    parser.add_argument("--insight-max-tokens", type=int, default=512)
+    parser.add_argument("--summary-max-tokens", type=int, default=16384)
+    parser.add_argument("--insight-temperature", type=float, default=0.5)
     return parser.parse_args()
 
 
@@ -228,36 +230,11 @@ def resolve_dcode(explicit: str | None) -> str:
     )
 
 
-def ensure_mcp_streamable_http_compat(dcode_bin: str) -> None:
-    """Install a venv-local shim for mcp/langchain-mcp-adapters name drift."""
-    dcode_path = Path(dcode_bin).resolve()
-    if ".venv" not in dcode_path.parts:
-        return
-    venv_index = dcode_path.parts.index(".venv")
-    venv_root = Path(*dcode_path.parts[: venv_index + 1])
-    site_packages = next((venv_root / "lib").glob("python*/site-packages"), None)
-    if site_packages is None:
-        return
-    sitecustomize = site_packages / "sitecustomize.py"
-    existing = sitecustomize.read_text(encoding="utf-8") if sitecustomize.exists() else ""
-    if (
-        "streamable_http_client" in existing
-        and "streamablehttp_client" in existing
-        and "mcp.client.auth.utils" in existing
-    ):
-        return
-    sitecustomize.write_text(MCP_COMPAT_SITE_CUSTOMIZE, encoding="utf-8")
-
-
-def valid_json(path: Path) -> bool:
-    if not path.exists() or path.stat().st_size == 0:
-        return False
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            json.load(f)
-        return True
-    except Exception:
-        return False
+def has_completed_artifacts(company_dir: Path) -> bool:
+    return bool(
+        list(company_dir.glob("session_stats_*.json"))
+        and list(company_dir.glob("insights_*.csv"))
+    )
 
 
 def make_env() -> dict[str, str]:
@@ -296,10 +273,50 @@ def load_env_file(path: str | Path) -> None:
             os.environ[key] = value
 
 
-def make_dcode_env(debug_file: Path) -> dict[str, str]:
+def prepare_runtime_hook(company_dir: Path) -> tuple[Path, Path]:
+    """Create a per-run sitecustomize that captures D-Code message events."""
+
+    runtime_dir = company_dir / ".dcode_runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    events_path = company_dir / "trajectory_events.jsonl"
+    events_path.unlink(missing_ok=True)
+    sitecustomize = runtime_dir / "sitecustomize.py"
+    dcode_only = (
+        MCP_COMPAT_SITE_CUSTOMIZE
+        + "\nfrom insights_discovery.dcode.trajectory_hook import install\ninstall()\n"
+    )
+    indented = "\n".join(f"    {line}" if line else "" for line in dcode_only.splitlines())
+    sitecustomize.write_text(
+        """# Loaded by D-Code and inherited by its Python child services.
+from pathlib import Path as _Path
+import sys as _sys
+
+# Compatibility imports and trajectory patching belong only in the CLI.
+# Loading them in LangGraph/MCP children can block service startup.
+if _Path(_sys.argv[0]).name == "dcode":
+"""
+        + indented
+        + "\n",
+        encoding="utf-8",
+    )
+    return runtime_dir, events_path
+
+
+def make_dcode_env(
+    debug_file: Path,
+    *,
+    runtime_hook_dir: Path | None = None,
+    trajectory_events: Path | None = None,
+) -> dict[str, str]:
     env = make_env()
     env.setdefault("DEEPAGENTS_CODE_DEBUG", "1")
     env.setdefault("DEEPAGENTS_CODE_DEBUG_FILE", debug_file.as_posix())
+    if runtime_hook_dir is not None:
+        env["PYTHONPATH"] = (
+            f"{runtime_hook_dir.as_posix()}{os.pathsep}{env.get('PYTHONPATH', '')}"
+        ).rstrip(os.pathsep)
+    if trajectory_events is not None:
+        env["DDR_DCODE_TRAJECTORY_EVENTS"] = trajectory_events.as_posix()
     ensure_local_no_proxy(env)
     return env
 
@@ -368,12 +385,12 @@ def load_scenario_data_source_availability(
                     "path": scenario_config["db_path"],
                 }
             )
-        if scenario_config.get("data_path"):
+        if scenario_config.get("code_root"):
             data_sources.append(
                 {
-                    "name": f"{scenario}_data_path",
+                    "name": f"{scenario}_code_root",
                     "type": "csv_directory",
-                    "path": scenario_config["data_path"],
+                    "path": scenario_config["code_root"],
                 }
             )
 
@@ -499,43 +516,21 @@ def build_stdio_mcp_config(
         }
 
     if "ddrbench_code" in active_servers:
+        code_root_value = scenario_config.get("code_root") or "./data/10k"
+        code_root = _resolve_repo_path(str(code_root_value), root).as_posix()
         servers["ddrbench_code"] = {
             "command": python,
             "args": [
                 (root / "tool_server/code_mcp.py").as_posix(),
                 "--transport",
                 "stdio",
-                "--data-path",
-                root.as_posix(),
+                "--code-root",
+                code_root,
             ],
             "env": env,
         }
 
     return {"mcpServers": servers} if servers else None
-
-
-@contextlib.contextmanager
-def temporary_project_mcp_config(mcp_config: dict[str, Any] | None):
-    path = repo_root() / PROJECT_MCP_CONFIG
-    original: str | None = None
-    existed = path.exists()
-    if existed:
-        original = path.read_text(encoding="utf-8")
-
-    try:
-        if mcp_config is None:
-            if path.exists():
-                path.unlink()
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_json(path, mcp_config)
-        yield
-    finally:
-        if existed and original is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(original, encoding="utf-8")
-        elif path.exists():
-            path.unlink()
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -652,9 +647,9 @@ def parse_token_usage_from_log(log_path: Path) -> dict[str, Any]:
     total_row: dict[str, int] | None = None
 
     row_re = re.compile(
-        r"^(?P<model>\\S.*?)\\s{2,}(?P<reqs>\\d+)\\s+"
-        r"(?P<input>[0-9.,]+[KM]?)\\s+"
-        r"(?P<output>[0-9.,]+[KM]?)\\s*$",
+        r"^(?P<model>\S.*?)\s{2,}(?P<reqs>\d+)\s+"
+        r"(?P<input>[0-9.,]+[KM]?)\s+"
+        r"(?P<output>[0-9.,]+[KM]?)\s*$",
         re.IGNORECASE,
     )
     for line in lines[usage_index + 1 : usage_index + 20]:
@@ -701,16 +696,6 @@ def parse_token_usage_from_log(log_path: Path) -> dict[str, Any]:
     }
 
 
-def annotate_output_json(output_path: Path, metadata: dict[str, Any]) -> None:
-    if not valid_json(output_path):
-        return
-    with output_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, dict):
-        data["run_metadata"] = metadata
-        write_json(output_path, data)
-
-
 def load_metadata_if_present(company_dir: Path) -> dict[str, Any] | None:
     metadata_path = company_dir / "run_metadata.json"
     if not metadata_path.exists():
@@ -721,6 +706,70 @@ def load_metadata_if_present(company_dir: Path) -> dict[str, Any] | None:
         return data if isinstance(data, dict) else None
     except Exception:
         return None
+
+
+def make_dcode_text_generator(
+    model_spec: str | None,
+    token_usage: dict[str, Any],
+):
+    """Create direct text generation calls using D-Code's exploration model."""
+
+    from deepagents_code.config import create_model
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    model_result = create_model(model_spec)
+    chat_model = model_result.model
+
+    async def generate(
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        langchain_messages = []
+        for message in messages:
+            if message["role"] == "system":
+                langchain_messages.append(SystemMessage(content=message["content"]))
+            else:
+                langchain_messages.append(HumanMessage(content=message["content"]))
+        bound = chat_model.bind(max_tokens=max_tokens, temperature=temperature)
+        response = await bound.ainvoke(langchain_messages)
+        usage = getattr(response, "usage_metadata", None) or {}
+        prompt_tokens = int(usage.get("input_tokens") or 0)
+        completion_tokens = int(usage.get("output_tokens") or 0)
+        token_usage["prompt_tokens"] += prompt_tokens
+        token_usage["completion_tokens"] += completion_tokens
+        token_usage["total_tokens"] += int(
+            usage.get("total_tokens") or prompt_tokens + completion_tokens
+        )
+        token_usage["model_calls"] += 1
+        if prompt_tokens or completion_tokens:
+            token_usage["available"] = True
+        content = response.content
+        if isinstance(content, str):
+            return content
+        return "".join(
+            str(item.get("text", ""))
+            for item in content or []
+            if isinstance(item, dict) and item.get("type") in {"text", "output_text"}
+        )
+
+    return generate, {
+        "provider": model_result.provider,
+        "model": model_result.model_name,
+    }
+
+
+def remove_native_report_files(company_dir: Path) -> list[str]:
+    """Remove final-report files if D-Code created them despite the override."""
+
+    removed: list[str] = []
+    for name in ("insights.json", "insights.csv", "final_report.csv"):
+        path = company_dir / name
+        if path.exists():
+            path.unlink()
+            removed.append(path.as_posix())
+    return removed
 
 
 def run_one(
@@ -736,31 +785,34 @@ def run_one(
     extra_args: list[str],
     dry_run: bool,
     quiet: bool,
-    annotate_output: bool,
+    insight_max_tokens: int = 512,
+    summary_max_tokens: int = 16384,
+    insight_temperature: float = 0.5,
     auto_mcp: bool = True,
     mcp_transport: str = "stdio",
     env_file: str | Path = ".env",
 ) -> dict[str, Any]:
-    ensure_mcp_streamable_http_compat(dcode_bin)
     load_env_file(env_file)
 
     company_dir = output_root / f"company_{cik}"
-    output_path = company_dir / "insights.json"
     log_path = company_dir / "run.log"
     metadata_path = company_dir / "run_metadata.json"
     prompt_path = company_dir / "prompt.txt"
     debug_path = company_dir / "dcode_debug.log"
     company_dir.mkdir(parents=True, exist_ok=True)
+    runtime_hook_dir, trajectory_events = prepare_runtime_hook(company_dir)
+    artifact_session_id = session_timestamp()
 
     prompt = DEFAULT_PROMPT_TEMPLATE.format(
         cik=cik,
-        output_path=output_path.as_posix(),
     )
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
     cmd = [
         dcode_bin,
-        "--trust-project-mcp",
+        "--no-stream",
+        "--model-params",
+        '{"disable_streaming":true}',
         "-n",
         prompt,
         "--timeout",
@@ -784,13 +836,16 @@ def run_one(
             scenario=scenario,
             log_dir=company_dir,
         )
+    runtime_mcp_config = runtime_hook_dir / "mcp.json"
     if mcp_config is None:
         cmd.insert(1, "--no-mcp")
+    else:
+        write_json(runtime_mcp_config, mcp_config)
+        cmd[1:1] = ["--mcp-config", runtime_mcp_config.as_posix()]
 
     started_at = time.time()
     record: dict[str, Any] = {
         "cik": cik,
-        "output_path": output_path.as_posix(),
         "log_path": log_path.as_posix(),
         "metadata_path": metadata_path.as_posix(),
         "prompt_path": prompt_path.as_posix(),
@@ -809,7 +864,7 @@ def run_one(
                 "status": "dry_run",
                 "returncode": None,
                 "duration_seconds": 0,
-                "output_valid_json": valid_json(output_path),
+                "artifacts_complete": has_completed_artifacts(company_dir),
                 "tool_call_stats": {
                     "total_tool_calls": 0,
                     "successful_tool_calls": 0,
@@ -821,11 +876,10 @@ def run_one(
                 "token_usage": {
                     "available": False,
                     "reason": "dry_run",
-                    "request_count": None,
-                    "input_tokens": None,
-                    "output_tokens": None,
-                    "total_tokens": None,
-                    "per_model": {},
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "model_calls": 0,
                 },
             }
         )
@@ -842,7 +896,7 @@ def run_one(
     else:
         mcp_server_context = contextlib.nullcontext([])
 
-    with mcp_server_context, temporary_project_mcp_config(mcp_config):
+    with mcp_server_context:
         with log_path.open("w", encoding="utf-8") as log_file:
             log_file.write("$ " + " ".join(cmd) + "\n")
             log_file.write("MCP resolution: " + json.dumps(mcp_resolution, ensure_ascii=False) + "\n\n")
@@ -852,7 +906,11 @@ def run_one(
                 result = subprocess.run(
                     cmd,
                     cwd=repo_root(),
-                    env=make_dcode_env(debug_path),
+                    env=make_dcode_env(
+                        debug_path,
+                        runtime_hook_dir=runtime_hook_dir,
+                        trajectory_events=trajectory_events,
+                    ),
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -860,15 +918,59 @@ def run_one(
                     check=False,
                 )
                 returncode = result.returncode
-                status = "ok" if returncode == 0 and valid_json(output_path) else "failed"
+                status = "ok" if returncode == 0 else "failed"
             except subprocess.TimeoutExpired:
                 returncode = 124
                 status = "timeout"
                 log_file.write(f"\nTimed out after {timeout + 60} seconds.\n")
 
+    exploration_ended_at = time.time()
+    removed_report_files = remove_native_report_files(company_dir)
+    turns = parse_events(trajectory_events) if trajectory_events.exists() else []
+    if status == "ok" and not turns:
+        status = "failed"
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write("\nNo structured D-Code trajectory turns were captured.\n")
+
+    evaluation_artifacts: dict[str, str] = {}
+    generation_runtime: dict[str, Any] = {}
+    exploration_token_usage = parse_token_usage_from_log(log_path)
+    token_usage: dict[str, Any] = {
+        "prompt_tokens": int(exploration_token_usage.get("input_tokens") or 0),
+        "completion_tokens": int(exploration_token_usage.get("output_tokens") or 0),
+        "total_tokens": int(exploration_token_usage.get("total_tokens") or 0),
+        "model_calls": int(exploration_token_usage.get("request_count") or 0),
+        "available": bool(exploration_token_usage.get("available")),
+        "exploration": exploration_token_usage,
+    }
+    if turns:
+        generator, model_metadata = make_dcode_text_generator(model, token_usage)
+        generation_runtime = {
+            "framework": "dcode",
+            **model_metadata,
+            "started_at": started_at,
+            "exploration_ended_at": exploration_ended_at,
+            "token_usage": token_usage,
+        }
+        evaluation_artifacts = run_async(
+            generate_artifacts(
+                turns=turns,
+                task=f"Analyze company with CIK {cik}",
+                generator=generator,
+                output_dir=company_dir,
+                settings=InsightGenerationSettings(
+                    insight_max_tokens=insight_max_tokens,
+                    summary_max_tokens=summary_max_tokens,
+                    insight_temperature=insight_temperature,
+                ),
+                session_id=artifact_session_id,
+                runtime_metadata=generation_runtime,
+            )
+        )
     ended_at = time.time()
     tool_call_stats = collect_tool_call_stats(started_at, ended_at, company_dir)
-    token_usage = parse_token_usage_from_log(log_path)
+    generation_runtime["ended_at"] = ended_at
+    token_usage["available"] = token_usage["total_tokens"] > 0
     metadata = {
         "cik": cik,
         "status": status,
@@ -881,19 +983,27 @@ def run_one(
         "tool_call_stats": tool_call_stats,
         "token_usage": token_usage,
         "debug_path": debug_path.as_posix(),
+        "trajectory_events_path": trajectory_events.as_posix(),
+        "evaluation_artifacts": evaluation_artifacts,
+        "removed_report_files": removed_report_files,
+        "insight_generation": {
+            "insight_max_tokens": insight_max_tokens,
+            "summary_max_tokens": summary_max_tokens,
+            "insight_temperature": insight_temperature,
+            **generation_runtime,
+        },
     }
     write_json(metadata_path, metadata)
-    if annotate_output:
-        annotate_output_json(output_path, metadata)
 
     record.update(
         {
             "status": status,
             "returncode": returncode,
             "duration_seconds": metadata["duration_seconds"],
-            "output_valid_json": valid_json(output_path),
+            "artifacts_complete": has_completed_artifacts(company_dir),
             "tool_call_stats": tool_call_stats,
             "token_usage": token_usage,
+            "evaluation_artifacts": evaluation_artifacts,
         }
     )
     return record
@@ -913,21 +1023,19 @@ def main() -> int:
     os.chdir(root)
 
     cik = str(args.cik)
-    output_root = resolve_single_output_root(args.output_dir, cik)
+    output_root = ensure_run_dir(resolve_single_output_root(args.output_dir, cik))
     output_root.mkdir(parents=True, exist_ok=True)
+    print(f"D-Code run directory: {output_root}")
 
     dcode_bin = resolve_dcode(args.dcode_bin)
     company_dir = output_root / f"company_{cik}"
-    output_path = company_dir / "insights.json"
-
-    if valid_json(output_path) and not args.overwrite:
+    if has_completed_artifacts(company_dir) and not args.overwrite:
         metadata = load_metadata_if_present(company_dir)
         record = {
             "cik": cik,
             "status": "skipped_existing",
-            "output_path": output_path.as_posix(),
             "metadata_path": (company_dir / "run_metadata.json").as_posix(),
-            "output_valid_json": True,
+            "artifacts_complete": True,
         }
         if metadata:
             record["tool_call_stats"] = metadata.get("tool_call_stats")
@@ -947,7 +1055,9 @@ def main() -> int:
             extra_args=args.extra_arg,
             dry_run=args.dry_run,
             quiet=args.quiet,
-            annotate_output=args.annotate_output,
+            insight_max_tokens=args.insight_max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            insight_temperature=args.insight_temperature,
             auto_mcp=not args.no_auto_mcp,
             mcp_transport=args.mcp_transport,
             env_file=args.env_file,

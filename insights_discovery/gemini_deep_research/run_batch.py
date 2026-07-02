@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("GEMINI_DEEP_RESEARCH_AGENT", "deep-research-preview-04-2026"))
     parser.add_argument("--mcp-url", default=os.getenv("SQLITE_MCP_URL", "http://127.0.0.1:8765/sse"))
     parser.add_argument("--db", default="./data/10k/raw/10k_financial_data.db")
-    parser.add_argument("--data-package-dir", default="")
     parser.add_argument("--file-root", action="append")
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--max-steps", type=int, default=20)
@@ -82,8 +81,6 @@ def build_extra_args(args: argparse.Namespace) -> List[str]:
         extra.append("--use-data-package")
     if args.data_package_only:
         extra.append("--data-package-only")
-    if args.data_package_dir:
-        extra.extend(["--data-package-dir", args.data_package_dir])
     if args.dump_raw_response:
         extra.append("--dump-raw-response")
     for file_root in args.file_root or ["./data/10k"]:

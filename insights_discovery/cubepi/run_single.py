@@ -14,6 +14,7 @@ from typing import Any
 
 from cubepi import Agent, tool
 from cubepi.providers.anthropic import AnthropicProvider
+from cubepi.providers.base import TextContent, UserMessage
 from cubepi.providers.openai import OpenAIProvider
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -26,8 +27,13 @@ from insights_discovery.common.output import (  # noqa: E402
     build_task,
     compact_json,
     default_output_file,
-    normalize_output,
-    write_outputs,
+)
+from insights_discovery.common.insight_generation_helper import (  # noqa: E402
+    InsightGenerationSettings,
+    TrajectoryTurn,
+    generate_artifacts,
+    session_timestamp,
+    utc_timestamp,
 )
 from insights_discovery.common.mcp_servers import (  # noqa: E402
     CODE_MCP_URL,
@@ -35,8 +41,12 @@ from insights_discovery.common.mcp_servers import (  # noqa: E402
     SQLITE_MCP_URL,
     SQLITE_SERVER_NAME,
     build_active_mcp_config,
+    find_available_port,
     managed_mcp_servers,
     server_names_from_resolution,
+)
+from insights_discovery.common.run_directories import (  # noqa: E402
+    ensure_run_dir,
 )
 
 
@@ -45,23 +55,92 @@ DEFAULT_CONFIG = Path("config.yaml")
 DEFAULT_SCENARIO = "10k"
 
 
+class CubePiTrajectoryCollector:
+    """Pair CubePI assistant tool calls and results by tool-call ID."""
+
+    def __init__(self) -> None:
+        self.assistant_by_call_id: dict[str, str] = {}
+        self.pending: dict[str, dict[str, Any]] = {}
+        self.turns: list[TrajectoryTurn] = []
+
+    def record_assistant_message(self, message: Any) -> None:
+        text = message_text(message).strip()
+        for item in getattr(message, "content", []) or []:
+            if getattr(item, "type", None) != "tool_call":
+                continue
+            call_id = str(getattr(item, "id", "") or "")
+            if call_id:
+                self.assistant_by_call_id[call_id] = text
+
+    def record_tool_start(self, event: Any) -> None:
+        call_id = str(getattr(event, "tool_call_id", "") or "")
+        self.pending[call_id] = {
+            "timestamp": utc_timestamp(),
+            "assistant_message": self.assistant_by_call_id.get(call_id, ""),
+            "tool_name": str(getattr(event, "tool_name", "") or ""),
+            "tool_arguments": dict(getattr(event, "args", {}) or {}),
+            "tool_call_id": call_id,
+        }
+
+    def record_tool_end(self, event: Any) -> None:
+        call_id = str(getattr(event, "tool_call_id", "") or "")
+        pending = self.pending.pop(call_id, {})
+        self.turns.append(
+            TrajectoryTurn(
+                timestamp=pending.get("timestamp", utc_timestamp()),
+                assistant_message=pending.get(
+                    "assistant_message",
+                    self.assistant_by_call_id.get(call_id, ""),
+                ),
+                tool_name=pending.get(
+                    "tool_name",
+                    str(getattr(event, "tool_name", "") or ""),
+                ),
+                tool_arguments=pending.get("tool_arguments", {}),
+                tool_result=getattr(event, "result", None),
+                tool_call_id=call_id,
+                is_error=bool(getattr(event, "is_error", False)),
+            )
+        )
+
+    def handle(self, event: Any) -> None:
+        event_type = getattr(event, "type", None)
+        if event_type == "message_end":
+            message = getattr(event, "message", None)
+            if getattr(message, "role", None) == "assistant":
+                self.record_assistant_message(message)
+        elif event_type == "tool_execution_start":
+            self.record_tool_start(event)
+        elif event_type == "tool_execution_end":
+            self.record_tool_end(event)
+
+
 def load_env_file(path: str) -> None:
     env_path = Path(path)
-    if not env_path.exists():
-        return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key and key not in os.environ:
-            os.environ[key] = value
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    for key in ("NO_PROXY", "no_proxy"):
+        values = [item.strip() for item in os.environ.get(key, "").split(",") if item.strip()]
+        existing = {item.lower() for item in values}
+        for item in ("localhost", "127.0.0.1", "::1"):
+            if item.lower() not in existing:
+                values.append(item)
+        os.environ[key] = ",".join(values)
 
 
 def output_path(args: argparse.Namespace) -> Path:
-    return default_output_file(args.output_dir, args.output_file or "", args.cik or "")
+    run_dir = ensure_run_dir(Path(args.output_dir))
+    if args.cik:
+        return run_dir / f"company_{args.cik}" / ".artifact_anchor"
+    return default_output_file(str(run_dir), "", "", suffix="insights")
 
 
 def init_tool_usage() -> dict[str, dict[str, int]]:
@@ -103,16 +182,15 @@ async def call_mcp_tool(mcp_url: str, tool_name: str, arguments: dict[str, Any])
     return {}
 
 
-def build_system_prompt(args: argparse.Namespace, task: str, output_file: Path) -> str:
+def build_system_prompt(args: argparse.Namespace, task: str) -> str:
     base_rules = AGENT_RULES_PATH.read_text(encoding="utf-8")
     return (
         f"{base_rules}\n\n"
         "## CubePi Runtime Notes\n\n"
         "- Available tools use the same DDR_Bench-prefixed names described in the rules.\n"
-        "- Return one final valid JSON object only; the runner will persist it to disk.\n"
+        "- Preserve exploration depth: investigate enough evidence to support at least "
+        f"{args.min_insights} distinct high-value findings.\n"
         f"- Target task: {task}.\n"
-        f"- Target output path: {output_file.as_posix()}.\n"
-        f"- Required minimum insights for this run: {args.min_insights}.\n"
     )
 
 
@@ -260,13 +338,49 @@ def event_to_line(event: Any) -> str | None:
     return None
 
 
-def output_is_parseable(data: dict[str, Any], min_insights: int) -> tuple[bool, str]:
-    insights = data.get("insights", []) or []
-    if len(insights) < min_insights:
-        return False, f"Only {len(insights)} insights were produced; expected at least {min_insights}."
-    if len(insights) == 1 and insights[0].get("topic") == "unparsed_output":
-        return False, "The model response was not parseable JSON."
-    return True, ""
+def add_message_token_usage(total: dict[str, int], message: Any) -> None:
+    """Accumulate CubePI provider usage from one assistant message."""
+
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return
+    prompt_tokens = (
+        int(getattr(usage, "input_tokens", 0) or 0)
+        + int(getattr(usage, "cache_read_tokens", 0) or 0)
+        + int(getattr(usage, "cache_write_tokens", 0) or 0)
+    )
+    completion_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    total["prompt_tokens"] += prompt_tokens
+    total["completion_tokens"] += completion_tokens
+    total["total_tokens"] += prompt_tokens + completion_tokens
+    total["model_calls"] += 1
+
+
+def make_cubepi_text_generator(model: Any, token_usage: dict[str, int]):
+    """Adapt the exploration model to the shared text-generator interface."""
+
+    async def generate(
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        system_prompt = "\n\n".join(
+            message["content"] for message in messages if message["role"] == "system"
+        )
+        user_text = "\n\n".join(
+            message["content"] for message in messages if message["role"] != "system"
+        )
+        response = await model.generate(
+            [UserMessage(content=[TextContent(text=user_text)])],
+            system_prompt=system_prompt,
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+        add_message_token_usage(token_usage, response)
+        return message_text(response)
+
+    return generate
 
 
 async def run_agent_async(args: argparse.Namespace) -> str:
@@ -278,16 +392,27 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     prompt_file = output_file.parent / "prompt.txt"
     prompt = (
         f"Analyze company with CIK {args.cik}. "
-        f"Produce at least {args.min_insights} high-value insights. "
-        f"Save final JSON to {output_file.as_posix()}."
+        f"Explore enough local evidence to support at least {args.min_insights} "
+        "distinct high-value findings."
         if args.cik
         else args.question or task
     )
     prompt_file.write_text(prompt + "\n", encoding="utf-8")
 
     tool_usage = init_tool_usage()
+    token_usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "model_calls": 0,
+    }
     _mcp_config, mcp_resolution = build_active_mcp_config(args.config, args.scenario, args.mcp_mode)
     active_servers = server_names_from_resolution(mcp_resolution)
+    sqlite_port = find_available_port()
+    code_port = find_available_port()
+    if not args.no_auto_mcp:
+        args.sqlite_mcp_url = f"http://127.0.0.1:{sqlite_port}/sse"
+        args.code_mcp_url = f"http://127.0.0.1:{code_port}/sse"
     provider = build_provider(args)
     model = provider.model(
         args.model,
@@ -297,15 +422,17 @@ async def run_agent_async(args: argparse.Namespace) -> str:
     )
     agent = Agent(
         model=model,
-        system_prompt=build_system_prompt(args, task, output_file),
+        system_prompt=build_system_prompt(args, task),
         tools=build_tools(args, tool_usage, active_servers),
         tool_execution="sequential",
     )
 
     log_path = output_file.parent / "run.log"
     started_at = time.time()
+    artifact_session_id = session_timestamp()
     chunks: list[str] = []
     assistant_texts: list[str] = []
+    trajectory = CubePiTrajectoryCollector()
 
     with managed_mcp_servers(
         mcp_resolution,
@@ -313,6 +440,8 @@ async def run_agent_async(args: argparse.Namespace) -> str:
         scenario=args.scenario,
         log_dir=output_file.parent,
         enabled=not args.no_auto_mcp,
+        sqlite_port=sqlite_port,
+        code_port=code_port,
     ), log_path.open("w", encoding="utf-8") as log:
         log.write(f"$ cubepi run_single provider={args.provider} model={args.model}\n\n")
         log.write("MCP resolution: " + json.dumps(mcp_resolution, ensure_ascii=False) + "\n\n")
@@ -320,6 +449,7 @@ async def run_agent_async(args: argparse.Namespace) -> str:
         log.flush()
 
         def on_event(event, signal=None):
+            trajectory.handle(event)
             line = event_to_line(event)
             if line is None:
                 return
@@ -331,6 +461,7 @@ async def run_agent_async(args: argparse.Namespace) -> str:
             if event_type == "message_end":
                 message = getattr(event, "message", None)
                 if getattr(message, "role", None) == "assistant":
+                    add_message_token_usage(token_usage, message)
                     text = message_text(message).strip()
                     if text:
                         assistant_texts.append(text)
@@ -347,37 +478,32 @@ async def run_agent_async(args: argparse.Namespace) -> str:
             log.write(f"\n[event] prompt_return run_id={run_id}\n")
             log.flush()
         except Exception as exc:
-            error_data = {
-                "task": task,
-                "cik": args.cik or "",
-                "insights": [],
-                "summary": "",
-                "error": {"type": exc.__class__.__name__, "message": str(exc)},
-                "tool_usage": tool_usage,
-                "model_calls": {"attempts": 1, "completed": 0, "failures": 1},
-            }
-            write_outputs(error_data, output_file)
             raise
 
-    raw_text = assistant_texts[-1] if assistant_texts else "".join(chunks)
-    data = normalize_output(raw_text, task, args.cik or "")
-    data["tool_usage"] = tool_usage
-    data["mcp_resolution"] = mcp_resolution
-    data["model_calls"] = {"attempts": 1, "completed": 1, "failures": 0}
-    data["runtime"] = {
-        "provider": args.provider,
-        "model": args.model,
-        "started_at": started_at,
-        "ended_at": time.time(),
-    }
-    acceptable, reason = output_is_parseable(data, args.min_insights)
-    if not acceptable:
-        data["warning"] = reason
-        data["raw_model_output"] = raw_text
-    paths = write_outputs(data, output_file)
-    if not acceptable:
-        raise RuntimeError(f"{reason} Saved output to {paths['json']} and {paths['csv']}")
-    return f"Saved {len(data.get('insights', []))} insights to {paths['json']} and {paths['csv']}"
+    artifact_paths = await generate_artifacts(
+        turns=trajectory.turns,
+        task=task,
+        generator=make_cubepi_text_generator(model, token_usage),
+        output_dir=output_file.parent,
+        settings=InsightGenerationSettings(
+            insight_max_tokens=args.insight_max_tokens,
+            summary_max_tokens=args.summary_max_tokens,
+            insight_temperature=args.insight_temperature,
+        ),
+        session_id=artifact_session_id,
+        runtime_metadata={
+            "framework": "cubepi",
+            "provider": args.provider,
+            "model": args.model,
+            "started_at": started_at,
+            "ended_at": time.time(),
+            "token_usage": token_usage,
+        },
+    )
+    return (
+        f"Captured {len(trajectory.turns)} tool turns and saved DDR artifacts: "
+        f"{artifact_paths}"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -397,11 +523,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--question", help="Optional custom task override. If omitted, --cik is required.")
     parser.add_argument("--min-insights", type=int, default=20)
     parser.add_argument("--output-dir", default="./outputs/cubepi")
-    parser.add_argument("--output-file", help="Exact JSON output path. CSV is written next to it.")
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--context-window", type=int, default=200000)
+    parser.add_argument("--insight-max-tokens", type=int, default=512)
+    parser.add_argument("--summary-max-tokens", type=int, default=16384)
+    parser.add_argument("--insight-temperature", type=float, default=0.5)
     args = parser.parse_args()
     if not args.cik and not args.question:
         parser.error("Either --cik or --question is required.")
