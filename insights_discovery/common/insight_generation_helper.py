@@ -176,6 +176,7 @@ async def generate_artifacts(
     settings: InsightGenerationSettings,
     session_id: str | None = None,
     runtime_metadata: dict[str, Any] | None = None,
+    final_summary: str | None = None,
 ) -> dict[str, str]:
     """Generate all evaluator-compatible artifacts for one completed trajectory."""
 
@@ -190,7 +191,8 @@ async def generate_artifacts(
             insight = "NO INSIGHT"
         insights.append(insight or "NO INSIGHT")
 
-    final_summary = await generate_final_summary(turns, generator, settings)
+    if not final_summary or not final_summary.upper().startswith("FINISH:"):
+        final_summary = await generate_final_summary(turns, generator, settings)
     generation_ended_at = time.time()
     runtime_metadata = runtime_metadata or {}
     runtime_metadata["artifact_generation_started_at"] = generation_started_at

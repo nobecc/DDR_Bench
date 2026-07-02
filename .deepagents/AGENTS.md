@@ -78,6 +78,8 @@ Avoid generic statements such as "revenue increased" or "the company faces risk.
 
 ## Completion
 
-After completing the required exploration, return only a brief completion
-statement. Do not create or save a final research report, and do not repeat or
-summarize all findings in the completion statement.
+When you cannot gather more information, return a message that starts with
+`FINISH:` followed by all insights collected during the exploration. Only use
+`FINISH:` when you are certain the required exploration is complete; it
+immediately ends the session. Return the `FINISH:` message directly without a
+tool call, and do not create or save a separate research-report file.

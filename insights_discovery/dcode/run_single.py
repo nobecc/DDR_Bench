@@ -28,7 +28,7 @@ from insights_discovery.common.insight_generation_helper import (
     run_async,
     session_timestamp,
 )
-from insights_discovery.dcode.trajectory_hook import parse_events
+from insights_discovery.dcode.trajectory_hook import parse_events, parse_final_summary
 from insights_discovery.common.run_directories import ensure_run_dir
 
 
@@ -965,6 +965,7 @@ def run_one(
                 ),
                 session_id=artifact_session_id,
                 runtime_metadata=generation_runtime,
+                final_summary=parse_final_summary(trajectory_events),
             )
         )
     ended_at = time.time()

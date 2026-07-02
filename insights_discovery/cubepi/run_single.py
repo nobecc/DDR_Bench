@@ -499,6 +499,14 @@ async def run_agent_async(args: argparse.Namespace) -> str:
             "ended_at": time.time(),
             "token_usage": token_usage,
         },
+        final_summary=next(
+            (
+                text
+                for text in reversed(assistant_texts)
+                if text.upper().startswith("FINISH:")
+            ),
+            None,
+        ),
     )
     return (
         f"Captured {len(trajectory.turns)} tool turns and saved DDR artifacts: "

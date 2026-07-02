@@ -186,3 +186,23 @@ def parse_events(path: Path) -> list[TrajectoryTurn]:
             )
         )
     return turns
+
+
+def parse_final_summary(path: Path) -> str | None:
+    """Return the last native, tool-free FINISH message from D-Code."""
+
+    final_summary = None
+    with path.open(encoding="utf-8") as stream:
+        for raw_line in stream:
+            if not raw_line.strip():
+                continue
+            event = json.loads(raw_line)
+            if event.get("type") != "assistant_chunk":
+                continue
+            message = event.get("message") or {}
+            if _tool_chunks(message):
+                continue
+            content = _text_from_content(message.get("content")).strip()
+            if content.upper().startswith("FINISH:"):
+                final_summary = content
+    return final_summary
